@@ -1,0 +1,19 @@
+0. entrar no workspace de test
+cd test_ws LEMBRAR QUE EM TODOS OS TERMINAIS TENS DE FAZER source /opt/ros/humble/setup.bash + source install/setup.bash quando a correr os programas
+
+
+1. correr sdk da camara :
+ros2 launch zed_wrapper zed_camera.launch.py camera_model:=zed2i
+
+2. correr point cloud processor (pre filtragem e segmentacao do chao)
+ros2 run point_cloud_processor point_cloud_processor
+
+3. correr rel_localization ( segmentacao de pixeis brancos + fitting curvas + frenet)
+ros2 run point_cloud_processor rel_localization
+para mudar que linhas estamos a seguir: default direita.
+novo terminal: ros2 param set /rel_localization_processor fit_side false -> esquerda
+novo terminal: ros2 param set /rel_localization_processor fit_side true -> direita
+
+4. correr duarte_init (e so um subscritor para as distancias / orientacao, da print dos valores no terminal dps)
+ros2 run point_cloud_processor duarte_init
+aqui brincas o que quiseres 
