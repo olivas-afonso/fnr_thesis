@@ -94,12 +94,18 @@ target_link_libraries(rel_localization
       # Ensure this is linked correctly
 )
 
+add_executable(duarte_init src/duarte_init.cpp)
+
+ament_target_dependencies(duarte_init rclcpp visualization_msgs)
+
+
 install(TARGETS
   point_cloud_processor
   ground_plane_processor
   joined_processor
   obstacle_detector
   rel_localization
+  duarte_init
   DESTINATION lib/${PROJECT_NAME}
 )
 

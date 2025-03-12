@@ -12,6 +12,12 @@
 #include <Eigen/Dense>
 #include <opencv2/opencv.hpp>
 #include <Eigen/Dense>
+#include "geometry_msgs/msg/pose_stamped.hpp"
+#include <tf2/LinearMath/Quaternion.h>
+#include <tf2/LinearMath/Matrix3x3.h>
+#include <visualization_msgs/msg/marker.hpp>
+
+
 
 class RelLocalizationProcessor : public rclcpp::Node
 {
@@ -22,13 +28,30 @@ public:
             "/ground_plane", rclcpp::SensorDataQoS(),
             std::bind(&RelLocalizationProcessor::pointCloudCallback, this, std::placeholders::_1));
 
+        pose_subscription_ = this->create_subscription<geometry_msgs::msg::PoseStamped>(
+            "/zed/zed_node/pose", 10, 
+            std::bind(&RelLocalizationProcessor::poseCallback, this, std::placeholders::_1));
+
+        distance_orientation_marker_pub_ = this->create_publisher<visualization_msgs::msg::Marker>(
+            "/distance_orientation_marker", 10);
+            
+            
+
         white_publisher_ = this->create_publisher<sensor_msgs::msg::PointCloud2>("/white_only", 10);
-        localization_publisher_ = this->create_publisher<std_msgs::msg::Float32MultiArray>("relative_localization", 10);
-        marker_publisher_ = this->create_publisher<visualization_msgs::msg::MarkerArray>("visualization_markers", 10);
-        marker_publisher2_ = this->create_publisher<visualization_msgs::msg::MarkerArray>("visualization_markers2", 10);
+        marker_publisher_ = this->create_publisher<visualization_msgs::msg::MarkerArray>("line_fit_original", 10);
+        marker_publisher2_ = this->create_publisher<visualization_msgs::msg::MarkerArray>("clusters", 10);
+        marker_publisher3_ = this->create_publisher<visualization_msgs::msg::MarkerArray>("line_fit_shifted", 10);
+
+        this->declare_parameter("fit_side", true); // Default to right fit
+        this->get_parameter("fit_side", fit_side_);
     }
 
 private:
+
+    void poseCallback(const geometry_msgs::msg::PoseStamped::SharedPtr msg)
+    {
+        current_pose_ = *msg;
+    }
     void pointCloudCallback(const sensor_msgs::msg::PointCloud2::SharedPtr msg)
     {
         pcl::PointCloud<pcl::PointXYZRGB>::Ptr cloud(new pcl::PointCloud<pcl::PointXYZRGB>());
@@ -84,6 +107,8 @@ private:
         white_msg.header = msg->header;
         white_publisher_->publish(white_msg);
 
+
+
         // ------------------- UPDATED: Selecting Leftmost and Rightmost Clusters -------------------
 
         pcl::PointIndices rightmost_cluster, leftmost_cluster;
@@ -123,23 +148,16 @@ private:
         pcl::PointCloud<pcl::PointXYZ>::Ptr left_cluster(new pcl::PointCloud<pcl::PointXYZ>());
         
         if (!rightmost_cluster.indices.empty())
-            pcl::copyPointCloud(*white_cloud, leftmost_cluster, *right_cluster);
+            pcl::copyPointCloud(*white_cloud, rightmost_cluster, *right_cluster);
         
         if (!leftmost_cluster.indices.empty())
-            pcl::copyPointCloud(*white_cloud, rightmost_cluster, *left_cluster);
+            pcl::copyPointCloud(*white_cloud, leftmost_cluster, *left_cluster);
 
-        if (!right_cluster->empty())
-            publishCurveMarkers(right_cluster, "right_curve", 1, 0.0, 1.0); // Green for right
+        if (fit_side_ ==true)
+            publishCurveMarkers(right_cluster); // Green for right
 
-        if (!left_cluster->empty())
-            publishCurveMarkers(left_cluster, "left_curve", 2, 1.0, 0.0); // Red for left
-
-        float distance, orientation;
-        computeFrenetFrame(right_cluster, distance, orientation);
-
-        std_msgs::msg::Float32MultiArray localization_msg;
-        localization_msg.data = {distance, orientation};
-        localization_publisher_->publish(localization_msg);
+        if (fit_side_ == false)
+            publishCurveMarkers(left_cluster); // Red for left
     }
 
     void RGBtoHSV(int r, int g, int b, float &h, float &s, float &v)
@@ -234,28 +252,118 @@ private:
         return mean_x;
     }
 
-    void computeFrenetFrame(pcl::PointCloud<pcl::PointXYZ>::Ptr right,
-                            float &distance, float &orientation)
+    void publishDistanceAndOrientation(float distance, float orientation)
     {
-        float right_x = computeClusterMeanX(right, pcl::PointIndices());
-        distance = right_x;
-        orientation = 0.0; 
+        auto marker = visualization_msgs::msg::Marker();
+        marker.header.frame_id = "map";  // Change to your relevant frame
+        marker.header.stamp = this->now();
+        marker.ns = "distance_orientation";
+        marker.id = 0;
+        marker.type = visualization_msgs::msg::Marker::TEXT_VIEW_FACING;
+        marker.action = visualization_msgs::msg::Marker::ADD;
+
+        // Position the text slightly above the camera position
+        marker.pose.position.x = current_pose_.pose.position.x;
+        marker.pose.position.y = current_pose_.pose.position.y;
+        marker.pose.position.z = 2.0;  // Adjust for visibility
+
+        marker.scale.z = 0.5;  // Adjust text size
+        marker.color.a = 1.0;  // Fully visible
+        marker.color.r = 1.0;
+        marker.color.g = 1.0;
+        marker.color.b = 1.0;
+
+        // Set text to display distance and orientation
+        marker.text = "Dist: " + std::to_string(distance) + "m\nOrient: " + std::to_string(orientation) + " rad";
+
+        distance_orientation_marker_pub_->publish(marker);
     }
-    void publishCurveMarkers(pcl::PointCloud<pcl::PointXYZ>::Ptr cluster, 
-        const std::string& ns, int marker_id,
-        float r, float g)
+
+
+    void computeFrenetFrame(const std::vector<geometry_msgs::msg::Point> &curve,
+        float &distance, float &orientation)
     {
-        if (cluster->size() < 3)
+        if (curve.empty())
         {
-        RCLCPP_WARN(this->get_logger(), "Not enough points to fit a curve.");
+        RCLCPP_WARN(this->get_logger(), "Shifted curve has no points!");
+        distance = 0.0;
+        orientation = 0.0;
         return;
         }
+
+        // Convert camera position from PoseStamped
+        Eigen::Vector2f camera_position(current_pose_.pose.position.x, current_pose_.pose.position.y);
+
+        float min_dist = std::numeric_limits<float>::max();
+        Eigen::Vector2f closest_point;
+        size_t closest_index = 0;
+
+        // Find the closest point on the curve
+        for (size_t i = 0; i < curve.size(); ++i)
+        {
+        Eigen::Vector2f point(curve[i].x, curve[i].y);
+        float dist = (camera_position - point).norm();
+
+        if (dist < min_dist)
+        {
+        min_dist = dist;
+        closest_point = point;
+        closest_index = i;
+        }
+        }
+
+        distance = min_dist; // The shortest distance to the shifted curve
+
+        // Compute orientation by estimating tangent at the closest point
+        Eigen::Vector2f tangent;
+        if (closest_index > 0 && closest_index < curve.size() - 1)
+        {
+        Eigen::Vector2f prev_point(curve[closest_index - 1].x, curve[closest_index - 1].y);
+        Eigen::Vector2f next_point(curve[closest_index + 1].x, curve[closest_index + 1].y);
+        tangent = (next_point - prev_point).normalized();
+        }
+        else
+        {
+        tangent = Eigen::Vector2f(1.0, 0.0); // Default direction if only one point
+        }
+
+        // Convert camera orientation from quaternion to yaw angle
+        tf2::Quaternion q(
+        current_pose_.pose.orientation.x,
+        current_pose_.pose.orientation.y,
+        current_pose_.pose.orientation.z,
+        current_pose_.pose.orientation.w);
+        tf2::Matrix3x3 m(q);
+        double roll, pitch, yaw;
+        m.getRPY(roll, pitch, yaw);
+
+        // Compute the difference between the camera's yaw and the tangent direction
+        float curve_angle = atan2(tangent.y(), tangent.x());
+        orientation = curve_angle - yaw;
+
+        // Normalize orientation to [-π, π]
+        while (orientation > M_PI) orientation -= 2 * M_PI;
+        while (orientation < -M_PI) orientation += 2 * M_PI;
+    }
+    
+    void publishCurveMarkers(pcl::PointCloud<pcl::PointXYZ>::Ptr cluster)
+    {
+        std::vector<geometry_msgs::msg::Point> shifted_curve_points;
+        
+        if (cluster->size() < 3)
+        {
+            RCLCPP_WARN(this->get_logger(), "Not enough points to fit a curve.");
+            return;
+        }
+
+        // Retrieve the current setting: left fit or right fit
+        this->get_parameter("fit_side", fit_side_); // Dynamic switching
 
         std::vector<float> x_vals, y_vals;
         for (const auto &point : cluster->points)
         {
-        x_vals.push_back(point.x);
-        y_vals.push_back(point.y);
+            x_vals.push_back(point.x);
+            y_vals.push_back(point.y);
         }
 
         // Fit a quadratic curve: y = ax^2 + bx + c
@@ -264,42 +372,83 @@ private:
 
         for (size_t i = 0; i < x_vals.size(); i++)
         {
-        A(i, 0) = x_vals[i] * x_vals[i]; // x^2
-        A(i, 1) = x_vals[i];             // x
-        A(i, 2) = 1;                     // constant
-        Y(i) = y_vals[i];
+            A(i, 0) = x_vals[i] * x_vals[i]; // x^2
+            A(i, 1) = x_vals[i];             // x
+            A(i, 2) = 1;                     // constant
+            Y(i) = y_vals[i];
         }
 
         Eigen::VectorXf coeffs = A.colPivHouseholderQr().solve(Y);
         float a = coeffs(0), b = coeffs(1), c = coeffs(2);
 
-        // Create a line strip marker
+        // Compute transformation using camera pose
+        Eigen::Matrix3f rotation_matrix;
+        Eigen::Vector3f translation_vector;
+
+        tf2::Quaternion q(
+            current_pose_.pose.orientation.x,
+            current_pose_.pose.orientation.y,
+            current_pose_.pose.orientation.z,
+            current_pose_.pose.orientation.w);
+        tf2::Matrix3x3 tf_rotation(q);
+        
+        for (int i = 0; i < 3; ++i)
+            for (int j = 0; j < 3; ++j)
+                rotation_matrix(i, j) = tf_rotation[i][j];
+
+        translation_vector << current_pose_.pose.position.x,
+                            current_pose_.pose.position.y,
+                            current_pose_.pose.position.z;
+
+        // Decide the fit type dynamically
+        int marker_id = fit_side_ ? 1 : 2; // 1 = Right Fit, 2 = Left Fit
+        float shift_amount = fit_side_ ? 0.3 : -0.3; // Right = +0.3, Left = -0.3
+        float r = fit_side_ ? 1.0f : 0.0f; // Right Fit = Red
+        float g = fit_side_ ? 0.0f : 1.0f; // Left Fit = Green
+
         visualization_msgs::msg::Marker curve_marker;
         curve_marker.header.frame_id = "map";
         curve_marker.header.stamp = this->get_clock()->now();
-        curve_marker.ns = ns; // Different namespaces for left and right clusters
+        curve_marker.ns = "curve_fit";
         curve_marker.id = marker_id;
         curve_marker.type = visualization_msgs::msg::Marker::LINE_STRIP;
-        curve_marker.scale.x = 0.05; // Line width
+        curve_marker.scale.x = 0.05; 
         curve_marker.color.r = r;
         curve_marker.color.g = g;
         curve_marker.color.b = 0.0;
         curve_marker.color.a = 1.0;
 
         for (float x = *std::min_element(x_vals.begin(), x_vals.end());
-        x <= *std::max_element(x_vals.begin(), x_vals.end()); x += 0.05)
+            x <= *std::max_element(x_vals.begin(), x_vals.end()); x += 0.05)
         {
-        geometry_msgs::msg::Point p;
-        p.x = x;
-        p.y = a * x * x + b * x + c; // Quadratic equation
-        p.z = 0.0;
-        curve_marker.points.push_back(p);
+            float y = a * x * x + b * x + c;
+            Eigen::Vector3f point_in_map(x, y, 0.0);
+            Eigen::Vector3f point_in_camera = rotation_matrix.inverse() * (point_in_map - translation_vector);
+
+            // Apply lateral shift
+            point_in_camera[1] += shift_amount;
+
+            // Transform back to map frame
+            Eigen::Vector3f translated_point = (rotation_matrix * point_in_camera) + translation_vector;
+
+            geometry_msgs::msg::Point p;
+            p.x = translated_point[0];
+            p.y = translated_point[1];
+            p.z = 0.0;
+
+            curve_marker.points.push_back(p);
+            shifted_curve_points.push_back(p);
         }
+
+        float distance, delta_orientation;
+        computeFrenetFrame(shifted_curve_points, distance, delta_orientation);
+        publishDistanceAndOrientation(distance, delta_orientation);
 
         visualization_msgs::msg::MarkerArray markers;
         markers.markers.push_back(curve_marker);
         marker_publisher_->publish(markers);
     }
+
 
     void publishClusterMarkers(pcl::PointCloud<pcl::PointXYZ>::Ptr cloud, const std::vector<pcl::PointIndices>& clusters)
     {
@@ -338,10 +487,16 @@ private:
     }
 
     rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr subscription_;
+    rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr pose_subscription_;
+    geometry_msgs::msg::PoseStamped current_pose_;
     rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr white_publisher_;
-    rclcpp::Publisher<std_msgs::msg::Float32MultiArray>::SharedPtr localization_publisher_;
+    rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr distance_orientation_marker_pub_;
     rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr marker_publisher_;
     rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr marker_publisher2_;
+    rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr marker_publisher3_;
+
+    rclcpp::Parameter fit_side_param_;
+    bool fit_side_;
 };
 
 int main(int argc, char **argv)
