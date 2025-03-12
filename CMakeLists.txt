@@ -13,8 +13,16 @@ find_package(pcl_ros REQUIRED)
 find_package(pcl_conversions REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(OpenCV REQUIRED)
+find_package(visualization_msgs REQUIRED)
+find_package(tf2 REQUIRED)
+find_package(tf2_ros REQUIRED)
+find_package(tf2_sensor_msgs REQUIRED)
 
-include_directories(${OpenCV_INCLUDE_DIRS})
+
+include_directories(
+  ${OpenCV_INCLUDE_DIRS}
+  /opt/ros/humble/include  # Ensures ROS2 headers are included
+)
 
 
 
@@ -64,11 +72,34 @@ ament_target_dependencies(obstacle_detector
   pcl_conversions
 )
 
+add_executable(rel_localization src/rel_localization_processor.cpp)
+
+ament_target_dependencies(rel_localization
+  rclcpp
+  std_msgs
+  sensor_msgs
+  pcl_ros
+  pcl_conversions
+  visualization_msgs
+  tf2
+  tf2_ros
+  tf2_sensor_msgs
+  
+)
+
+target_link_libraries(rel_localization
+    ${OpenCV_LIBS}
+    tf2::tf2
+    tf2_ros::tf2_ros
+      # Ensure this is linked correctly
+)
+
 install(TARGETS
   point_cloud_processor
   ground_plane_processor
   joined_processor
   obstacle_detector
+  rel_localization
   DESTINATION lib/${PROJECT_NAME}
 )
 
