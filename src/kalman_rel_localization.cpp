@@ -35,17 +35,51 @@ public:
 
 
 
-        distance_orientation_marker_pub_ = this->create_publisher<visualization_msgs::msg::Marker>("/distance_orientation_marker", 10);
+        //distance_orientation_marker_pub_ = this->create_publisher<visualization_msgs::msg::Marker>("/distance_orientation_marker", 10);
         white_publisher_ = this->create_publisher<sensor_msgs::msg::PointCloud2>("/white_only", 10);
         marker_publisher_ = this->create_publisher<visualization_msgs::msg::MarkerArray>("line_fit_original", 10);
         marker_publisher2_ = this->create_publisher<visualization_msgs::msg::MarkerArray>("clusters", 10);
-        marker_publisher3_ = this->create_publisher<visualization_msgs::msg::MarkerArray>("line_fit_shifted", 10);
+        cluster_marker_pub_ = this->create_publisher<visualization_msgs::msg::Marker>("cluster_markers", 10);
+
 
         this->declare_parameter("fit_side", true); // Default to right fit
         this->get_parameter("fit_side", fit_side_);
+
+
+        // Initialize state (arbitrary starting values)
+        state << 0, 0, 1.50, 0;  // Assuming road width is 1.51m
+
+        // Initialize covariance matrix P
+        P = Eigen::Matrix4f::Identity() * 0.1;  // Small initial uncertainty
+
+        // Process noise (how much we trust our motion model)
+        Q = Eigen::Matrix4f::Identity() * 0.01;
+
+        // Measurement noise (how much we trust sensor readings)
+        R = Eigen::Matrix4f::Identity() * 0.05;
+
+        // Identity matrix
+        I = Eigen::Matrix4f::Identity();
+
+        // State transition model (assuming road markings move smoothly)
+        F = Eigen::Matrix4f::Identity();  // No movement model for now
+
+        // Measurement model (we observe both left and right markings)
+        H << 1, 0, 0, 0,
+            0, 1, 0, 0,
+            0, 0, 1, 0,
+            0, 0, 0, 1;
+
     }
 
 private:
+    Eigen::Vector4f state;  // [x_left, y_left, x_right, y_right]
+    Eigen::Matrix4f P;       // Covariance matrix
+    Eigen::Matrix4f Q;       // Process noise
+    Eigen::Matrix4f R;       // Measurement noise
+    Eigen::Matrix4f I;       // Identity matrix
+    Eigen::Matrix4f F;       // State transition model
+    Eigen::Matrix<float, 4, 4> H;  // Measurement model
 
     void poseCallback(const geometry_msgs::msg::PoseStamped::SharedPtr msg)
     {
@@ -99,7 +133,7 @@ private:
             return;
         }
 
-        publishClusterMarkers(white_cloud, selected_clusters);
+        //publishClusterMarkers(white_cloud, selected_clusters);
 
         sensor_msgs::msg::PointCloud2 white_msg;
         pcl::toROSMsg(*white_cloud, white_msg);
@@ -111,9 +145,11 @@ private:
         // ------------------- UPDATED: Selecting Leftmost and Rightmost Clusters -------------------
 
         pcl::PointIndices rightmost_cluster, leftmost_cluster;
+        Eigen::Vector2f left_observed, right_observed;
+        bool left_detected = false, right_detected = false;
         float max_angle = -std::numeric_limits<float>::infinity();
         float min_angle = std::numeric_limits<float>::infinity();
-        
+            
         Eigen::Vector3f camera_position(0.0, 0.0, 0.0);  // Assuming camera at (0,0,0) in its own frame
 
         for (const auto& cluster : selected_clusters)
@@ -126,37 +162,161 @@ private:
                 centroid[2] += white_cloud->points[idx].z;
             }
             centroid /= cluster.indices.size();  // Compute centroid
-
+        
             // Compute relative angle to the camera
-            float angle = atan2(centroid[1] - camera_position[1], centroid[0] - camera_position[0]);
-
+            float angle = atan2(centroid[1], centroid[0]);
+        
             if (angle > max_angle) 
             {
                 max_angle = angle;
                 leftmost_cluster = cluster;
+                left_observed = centroid.head<2>();
+                left_detected = true;
             }
-
+        
             if (angle < min_angle) 
             {
                 min_angle = angle;
                 rightmost_cluster = cluster;
+                right_observed = centroid.head<2>();
+                right_detected = true;
             }
         }
 
-        pcl::PointCloud<pcl::PointXYZ>::Ptr right_cluster(new pcl::PointCloud<pcl::PointXYZ>());
-        pcl::PointCloud<pcl::PointXYZ>::Ptr left_cluster(new pcl::PointCloud<pcl::PointXYZ>());
-        
-        if (!rightmost_cluster.indices.empty())
-            pcl::copyPointCloud(*white_cloud, rightmost_cluster, *right_cluster);
-        
-        if (!leftmost_cluster.indices.empty())
-            pcl::copyPointCloud(*white_cloud, leftmost_cluster, *left_cluster);
 
-        if (fit_side_ ==true)
-            publishCurveMarkers(right_cluster); // Green for right
+        
+        // Kalman Filter Prediction Step
+        state = F * state;
+        P = F * P * F.transpose() + Q;
+
+        if (left_detected && right_detected) {
+            Eigen::Vector4f Z;
+            Z << left_observed[0], left_observed[1], right_observed[0], right_observed[1];
+        
+            Eigen::Matrix4f H;
+            H << 1, 0, 0, 0,
+                 0, 1, 0, 0,
+                 0, 0, 1, 0,
+                 0, 0, 0, 1;
+        
+            Eigen::Matrix4f S = H * P * H.transpose() + R;
+            Eigen::Matrix4f K = P * H.transpose() * S.inverse();
+        
+            state = state + K * (Z - H * state);
+            P = (I - K * H) * P;
+        }
+
+        // If only left marking detected, estimate right
+        else if (left_detected)
+        {
+            state[0] = left_observed[0];
+            state[1] = left_observed[1];
+            state[2] = left_observed[0] + 1.51;  // Estimate right using known road width
+            state[3] = left_observed[1];
+
+            // Reduce covariance uncertainty
+            P *= 0.9;
+        }
+
+        // If only right marking detected, estimate left
+        else if (right_detected)
+        {
+            state[2] = right_observed[0];
+            state[3] = right_observed[1];
+            state[0] = right_observed[0] - 1.51;  // Estimate left using known road width
+            state[1] = right_observed[1];
+
+            // Update covariance (reduce uncertainty)
+            P *= 0.9;
+        }
+
+        // Assign Kalman-filtered points
+        left_observed[0] = state[0];
+        left_observed[1] = state[1];
+        right_observed[0] = state[2];
+        right_observed[1] = state[3];
+
+        pcl::PointCloud<pcl::PointXYZ>::Ptr left_cluster(new pcl::PointCloud<pcl::PointXYZ>());
+        pcl::PointCloud<pcl::PointXYZ>::Ptr right_cluster(new pcl::PointCloud<pcl::PointXYZ>());
+
+        if (left_detected) {
+            for (int idx : leftmost_cluster.indices) {
+                left_cluster->push_back(white_cloud->points[idx]);
+            }
+        } else {
+            // If no left cluster detected, add a single estimated point
+            left_cluster->push_back(pcl::PointXYZ(state[0], state[1], 0));
+        }
+
+        if (right_detected) {
+            for (int idx : rightmost_cluster.indices) {
+                right_cluster->push_back(white_cloud->points[idx]);
+            }
+        } else {
+            // If no right cluster detected, add a single estimated point
+            right_cluster->push_back(pcl::PointXYZ(state[2], state[3], 0));
+        }
+
+        //RCLCPP_INFO(this->get_logger(), "Right Detected: %s", right_detected ? "Yes" : "No");
+        //RCLCPP_INFO(this->get_logger(), "Right Observed: x=%.3f, y=%.3f", right_observed[0], right_observed[1]);
+
+        // Create corrected clusters
+        pcl::PointCloud<pcl::PointXYZ>::Ptr right_corrected_cluster(new pcl::PointCloud<pcl::PointXYZ>());
+        pcl::PointCloud<pcl::PointXYZ>::Ptr left_corrected_cluster(new pcl::PointCloud<pcl::PointXYZ>());
+
+        // If right cluster is detected, apply Kalman correction to all points
+        if (right_detected) {
+            for (const auto &point : right_cluster->points) {
+                pcl::PointXYZ corrected_point;
+                corrected_point.x = (point.x + state[2]) / 2;  // Blend detected & Kalman estimate
+                corrected_point.y = (point.y + state[3]) / 2;
+                corrected_point.z = 0;
+                right_corrected_cluster->push_back(corrected_point);
+            }
+        } else {
+            // No detection: use only the Kalman estimate
+            right_corrected_cluster->push_back(pcl::PointXYZ(state[2], state[3], 0));
+        }
+
+        // If left cluster is detected, apply Kalman correction to all points
+        if (left_detected) {
+            for (const auto &point : left_cluster->points) {
+                pcl::PointXYZ corrected_point;
+                corrected_point.x = (point.x + state[0]) / 2;
+                corrected_point.y = (point.y + state[1]) / 2;
+                corrected_point.z = 0;
+                left_corrected_cluster->push_back(corrected_point);
+            }
+        } else {
+            // No detection: use only the Kalman estimate
+            left_corrected_cluster->push_back(pcl::PointXYZ(state[0], state[1], 0));
+        }
+
+
+        // Publish all four clusters for visualization
+        publishClusterMarkers(left_cluster, "map", "left_raw", 0, 1.0, 0.0, 0.0);  // Red - Raw Left
+        publishClusterMarkers(right_cluster, "map", "right_raw", 1, 0.0, 1.0, 0.0); // Green - Raw Right
+        publishClusterMarkers(left_corrected_cluster, "map", "left_kalman", 2, 1.0, 1.0, 0.0); // Yellow - Kalman Left
+        publishClusterMarkers(right_corrected_cluster, "map", "right_kalman", 3, 0.0, 1.0, 1.0); // Cyan - Kalman Right
+
+
+        // Publish both detected and Kalman-corrected lanes for visualization
+        //publishCurveMarkers(right_cluster, false);  // Raw observed right
+        //publishCurveMarkers(left_cluster, false);   // Raw observed left
+        //publishCurveMarkers(right_corrected_cluster, true);  // Kalman-filtered right
+        //publishCurveMarkers(left_corrected_cluster, true);   // Kalman-filtered left
+
+        
+        //publishSingleClusterMarker(right_cluster);
+
+
+        // Use Kalman-filtered clusters for curve fitting
+        if (fit_side_ == true)
+            publishCurveMarkers(right_cluster); // Fit curve on right
 
         if (fit_side_ == false)
-            publishCurveMarkers(left_cluster); // Red for left
+            publishCurveMarkers(left_cluster);  // Fit curve on left
+
     }
 
     void RGBtoHSV(int r, int g, int b, float &h, float &s, float &v)
@@ -243,132 +403,16 @@ private:
         return {cluster_data[0].indices, cluster_data[1].indices};
     }
 
-    void publishDistanceAndOrientation(float distance, float orientation)
-    {
-        auto marker = visualization_msgs::msg::Marker();
-        marker.header.frame_id = "map";  // Change to your relevant frame
-        marker.header.stamp = this->now();
-        marker.ns = "distance_orientation";
-        marker.id = 0;
-        marker.type = visualization_msgs::msg::Marker::TEXT_VIEW_FACING;
-        marker.action = visualization_msgs::msg::Marker::ADD;
-
-        // Position the text slightly above the camera position
-        marker.pose.position.x = current_pose_.pose.position.x;
-        marker.pose.position.y = current_pose_.pose.position.y;
-        marker.pose.position.z = 2.0;  // Adjust for visibility
-
-        marker.scale.z = 0.5;  // Adjust text size
-        marker.color.a = 1.0;  // Fully visible
-        marker.color.r = 1.0;
-        marker.color.g = 1.0;
-        marker.color.b = 1.0;
-
-        // Set text to display distance and orientation
-        marker.text = "Dist: " + std::to_string(distance) + "m\nOrient: " + std::to_string(orientation) + " rad";
-
-        distance_orientation_marker_pub_->publish(marker);
-    }
 
 
-    void computeFrenetFrame(const std::vector<geometry_msgs::msg::Point> &curve,
-        float &distance, float &orientation)
-    {
-        if (curve.empty())
-        {
-        RCLCPP_WARN(this->get_logger(), "Shifted curve has no points!");
-        distance = 0.0;
-        orientation = 0.0;
-        return;
-        }
-
-        // Convert camera position from PoseStamped
-        Eigen::Vector2f camera_position(current_pose_.pose.position.x, current_pose_.pose.position.y);
-
-        float min_dist = std::numeric_limits<float>::max();
-        Eigen::Vector2f closest_point;
-        size_t closest_index = 0;
-
-        // Find the closest point on the curve
-        for (size_t i = 0; i < curve.size(); ++i)
-        {
-        Eigen::Vector2f point(curve[i].x, curve[i].y);
-        float dist = (camera_position - point).norm();
-
-        if (dist < min_dist)
-        {
-        min_dist = dist;
-        closest_point = point;
-        closest_index = i;
-        }
-        }
-
-        distance = min_dist; // The shortest distance to the curve
-
-        // Compute tangent direction at the closest point
-        Eigen::Vector2f tangent;
-
-        if (closest_index == 0 && curve.size() > 1) // First point, use forward difference
-        {
-        Eigen::Vector2f next_point(curve[closest_index + 1].x, curve[closest_index + 1].y);
-        tangent = (next_point - closest_point).normalized();
-        }
-        else if (closest_index == curve.size() - 1 && curve.size() > 1) // Last point, use backward difference
-        {
-        Eigen::Vector2f prev_point(curve[closest_index - 1].x, curve[closest_index - 1].y);
-        tangent = (closest_point - prev_point).normalized();
-        }
-        else if (curve.size() > 2) // Middle points, use central difference
-        {
-        Eigen::Vector2f prev_point(curve[closest_index - 1].x, curve[closest_index - 1].y);
-        Eigen::Vector2f next_point(curve[closest_index + 1].x, curve[closest_index + 1].y);
-        tangent = (next_point - prev_point).normalized();
-        }
-        else
-        {
-        tangent = Eigen::Vector2f(1.0, 0.0); // Default to x-axis if only one point
-        }
-
-        // Convert camera orientation from quaternion to yaw angle
-        tf2::Quaternion q(
-        current_pose_.pose.orientation.x,
-        current_pose_.pose.orientation.y,
-        current_pose_.pose.orientation.z,
-        current_pose_.pose.orientation.w);
-        tf2::Matrix3x3 m(q);
-        double roll, pitch, yaw;
-        m.getRPY(roll, pitch, yaw);
-
-        // Compute the angle between camera's forward direction and tangent
-        float curve_angle = atan2(tangent.y(), tangent.x());
-        float angle_diff = curve_angle - yaw;
-
-        // Compute the sign using the 2D cross product
-        Eigen::Vector2f camera_forward(std::cos(yaw), std::sin(yaw));
-        Eigen::Vector2f to_curve = closest_point - camera_position;
-        float cross_product = camera_forward.x() * to_curve.y() - camera_forward.y() * to_curve.x();
-
-        // Assign positive or negative sign based on the cross product
-        if (cross_product < 0)
-        {
-            angle_diff = +std::abs(angle_diff); // Curve is to the right
-        }
-        else
-        {
-            angle_diff = -std::abs(angle_diff); // Curve is to the left
-        }
-
-        // Normalize orientation to [-π, π]
-        orientation = fmod(angle_diff + M_PI, 2 * M_PI) - M_PI;
-
-    }
+    
 
     
     void publishCurveMarkers(pcl::PointCloud<pcl::PointXYZ>::Ptr cluster)
     {
         std::vector<geometry_msgs::msg::Point> shifted_curve_points;
         
-        if (cluster->size() < 3)
+        if (cluster->size() < 2)
         {
             RCLCPP_WARN(this->get_logger(), "Not enough points to fit a curve.");
             return;
@@ -458,51 +502,84 @@ private:
             shifted_curve_points.push_back(p);
         }
 
-        float distance, delta_orientation;
-        computeFrenetFrame(shifted_curve_points, distance, delta_orientation);
-        publishDistanceAndOrientation(distance, delta_orientation);
-
         visualization_msgs::msg::MarkerArray markers;
         markers.markers.push_back(curve_marker);
         marker_publisher_->publish(markers);
     }
 
 
-    void publishClusterMarkers(pcl::PointCloud<pcl::PointXYZ>::Ptr cloud, const std::vector<pcl::PointIndices>& clusters)
+    void publishClusterMarkers(
+        const pcl::PointCloud<pcl::PointXYZ>::Ptr& cluster,
+        const std::string& frame_id,
+        const std::string& ns,
+        int id,
+        float r, float g, float b)
     {
-        visualization_msgs::msg::MarkerArray cluster_markers;
-        std::vector<std::tuple<float, float, float>> colors = {{1.0, 0.0, 0.0}, {0.0, 1.0, 0.0}, {0.0, 0.0, 1.0}};
+        visualization_msgs::msg::Marker marker;
+        marker.header.frame_id = frame_id;
+        marker.header.stamp = this->now();
+        marker.ns = ns;
+        marker.id = id;
+        marker.type = visualization_msgs::msg::Marker::SPHERE_LIST;
+        marker.action = visualization_msgs::msg::Marker::ADD;
+        marker.scale.x = 0.05;
+        marker.scale.y = 0.05;
+        marker.scale.z = 0.05;
+        marker.color.r = r;
+        marker.color.g = g;
+        marker.color.b = b;
+        marker.color.a = 1.0;
 
-        for (size_t i = 0; i < clusters.size(); ++i)
+        for (const auto& point : cluster->points)
         {
-            visualization_msgs::msg::Marker cluster_marker;
-            cluster_marker.header.frame_id = "map";
-            cluster_marker.header.stamp = this->get_clock()->now();
-            cluster_marker.ns = "clusters";
-            cluster_marker.id = i;
-            cluster_marker.type = visualization_msgs::msg::Marker::SPHERE_LIST;
-            cluster_marker.scale.x = 0.05;
-            cluster_marker.scale.y = 0.05;
-            cluster_marker.scale.z = 0.05;
-
-            auto [r, g, b] = colors[i % colors.size()];
-            cluster_marker.color.r = r;
-            cluster_marker.color.g = g;
-            cluster_marker.color.b = b;
-            cluster_marker.color.a = 1.0;
-
-            for (int idx : clusters[i].indices)
-            {
-                geometry_msgs::msg::Point p;
-                p.x = cloud->points[idx].x;
-                p.y = cloud->points[idx].y;
-                p.z = cloud->points[idx].z;
-                cluster_marker.points.push_back(p);
-            }
-            cluster_markers.markers.push_back(cluster_marker);
+            geometry_msgs::msg::Point p;
+            p.x = point.x;
+            p.y = point.y;
+            p.z = point.z;
+            marker.points.push_back(p);
         }
-        marker_publisher2_->publish(cluster_markers);
+
+        cluster_marker_pub_->publish(marker);
     }
+
+
+    void publishSingleClusterMarker(pcl::PointCloud<pcl::PointXYZ>::Ptr cluster)
+    {
+        visualization_msgs::msg::MarkerArray marker_array;
+        visualization_msgs::msg::Marker cluster_marker;
+    
+        cluster_marker.header.frame_id = "map";
+        cluster_marker.header.stamp = this->get_clock()->now();
+        cluster_marker.ns = "single_cluster";
+        cluster_marker.id = 0;  // Single cluster
+        cluster_marker.type = visualization_msgs::msg::Marker::SPHERE_LIST;
+        cluster_marker.scale.x = 0.05;
+        cluster_marker.scale.y = 0.05;
+        cluster_marker.scale.z = 0.05;
+        cluster_marker.color.r = 1.0;  // Red color
+        cluster_marker.color.g = 0.0;
+        cluster_marker.color.b = 0.0;
+        cluster_marker.color.a = 1.0;
+    
+        // Add points to marker
+        for (const auto& point : cluster->points)
+        {
+            geometry_msgs::msg::Point p;
+            p.x = point.x;
+            p.y = point.y;
+            p.z = point.z;
+            cluster_marker.points.push_back(p);
+        }
+    
+        // Add marker to array
+        marker_array.markers.push_back(cluster_marker);
+    
+        // Publish the MarkerArray
+        marker_publisher2_->publish(marker_array);
+    }
+    
+
+
 
     rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr subscription_;
     rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr pose_subscription_;
@@ -511,7 +588,8 @@ private:
     rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr distance_orientation_marker_pub_;
     rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr marker_publisher_;
     rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr marker_publisher2_;
-    rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr marker_publisher3_;
+    rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr cluster_marker_pub_;
+
 
     rclcpp::Parameter fit_side_param_;
     bool fit_side_;

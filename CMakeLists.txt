@@ -98,6 +98,28 @@ add_executable(duarte_init src/duarte_init.cpp)
 
 ament_target_dependencies(duarte_init rclcpp visualization_msgs)
 
+add_executable(kalman_rel src/kalman_rel_localization.cpp)
+
+ament_target_dependencies(kalman_rel
+  rclcpp
+  std_msgs
+  sensor_msgs
+  pcl_ros
+  pcl_conversions
+  visualization_msgs
+  tf2
+  tf2_ros
+  tf2_sensor_msgs
+  
+)
+
+target_link_libraries(kalman_rel
+    ${OpenCV_LIBS}
+    tf2::tf2
+    tf2_ros::tf2_ros
+      # Ensure this is linked correctly
+)
+
 
 install(TARGETS
   point_cloud_processor
@@ -106,6 +128,7 @@ install(TARGETS
   obstacle_detector
   rel_localization
   duarte_init
+  kalman_rel
   DESTINATION lib/${PROJECT_NAME}
 )
 
