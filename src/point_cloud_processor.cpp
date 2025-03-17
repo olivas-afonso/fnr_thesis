@@ -87,7 +87,7 @@ private:
 
         pcl::VoxelGrid<pcl::PointXYZRGB> voxel_filter;
         voxel_filter.setInputCloud(cloud);
-        voxel_filter.setLeafSize(0.03f, 0.03f, 0.03f); // Larger voxel size = faster processing
+        voxel_filter.setLeafSize(0.02f, 0.02f, 0.02f); // Larger voxel size = faster processing
         pcl::PointCloud<pcl::PointXYZRGB>::Ptr downsampled_cloud(new pcl::PointCloud<pcl::PointXYZRGB>());
         voxel_filter.filter(*downsampled_cloud);
 

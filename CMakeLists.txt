@@ -19,6 +19,8 @@ find_package(tf2_ros REQUIRED)
 find_package(tf2_sensor_msgs REQUIRED)
 
 
+
+
 include_directories(
   ${OpenCV_INCLUDE_DIRS}
   /opt/ros/humble/include  # Ensures ROS2 headers are included
@@ -120,6 +122,51 @@ target_link_libraries(kalman_rel
       # Ensure this is linked correctly
 )
 
+add_executable(circle_kalman src/kalman_circle_localization.cpp)
+
+ament_target_dependencies(circle_kalman
+  rclcpp
+  std_msgs
+  sensor_msgs
+  pcl_ros
+  pcl_conversions
+  visualization_msgs
+  tf2
+  tf2_ros
+  tf2_sensor_msgs
+  
+)
+
+target_link_libraries(circle_kalman
+    ${OpenCV_LIBS}
+    tf2::tf2
+    tf2_ros::tf2_ros
+      # Ensure this is linked correctly
+)
+
+add_executable(test_cluster src/cluster_test.cpp)
+
+ament_target_dependencies(test_cluster
+  rclcpp
+  std_msgs
+  sensor_msgs
+  pcl_ros
+  pcl_conversions
+  visualization_msgs
+  tf2
+  tf2_ros
+  tf2_sensor_msgs
+  
+)
+
+target_link_libraries(test_cluster
+    ${OpenCV_LIBS}
+    tf2::tf2
+    tf2_ros::tf2_ros
+      # Ensure this is linked correctly
+)
+
+
 
 install(TARGETS
   point_cloud_processor
@@ -129,6 +176,8 @@ install(TARGETS
   rel_localization
   duarte_init
   kalman_rel
+  circle_kalman
+  test_cluster
   DESTINATION lib/${PROJECT_NAME}
 )
 

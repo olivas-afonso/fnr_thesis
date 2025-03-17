@@ -19,6 +19,7 @@
 
 
 
+
 class RelLocalizationProcessor : public rclcpp::Node
 {
 public:
@@ -56,7 +57,7 @@ public:
         Q = Eigen::Matrix4f::Identity() * 0.01;
 
         // Measurement noise (how much we trust sensor readings)
-        R = Eigen::Matrix4f::Identity() * 0.05;
+        R = Eigen::Matrix4f::Identity() * 0.5;
 
         // Identity matrix
         I = Eigen::Matrix4f::Identity();
@@ -183,7 +184,15 @@ private:
             }
         }
 
-
+        if (left_detected && right_detected) {
+            state << left_observed[0], left_observed[1], right_observed[0], right_observed[1];
+        } else if (left_detected) {
+            state << left_observed[0], left_observed[1], left_observed[0] + 1.5, left_observed[1];
+        } else if (right_detected) {
+            state << right_observed[0] - 1.5, right_observed[1], right_observed[0], right_observed[1];
+        } else {
+            state << 0, 0, 1.5, 0;  // Default fallback
+        }
         
         // Kalman Filter Prediction Step
         state = F * state;
@@ -215,7 +224,8 @@ private:
             state[3] = left_observed[1];
 
             // Reduce covariance uncertainty
-            P *= 0.9;
+            P = P * 0.95 + Eigen::Matrix4f::Identity() * 0.01;  // Add small uncertainty
+
         }
 
         // If only right marking detected, estimate left
@@ -227,7 +237,8 @@ private:
             state[1] = right_observed[1];
 
             // Update covariance (reduce uncertainty)
-            P *= 0.9;
+            P = P * 0.95 + Eigen::Matrix4f::Identity() * 0.01;  // Add small uncertainty
+
         }
 
         // Assign Kalman-filtered points
