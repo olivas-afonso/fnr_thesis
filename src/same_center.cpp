@@ -55,19 +55,19 @@ public:
         this->get_parameter("fit_side", fit_side_);
 
         // Initialize state [x_c, y_c, r, theta]
-        state = Eigen::VectorXf::Zero(6);
-        state << 0, 0, 3.0, 0, 0, 3.0; // Assume initial curve with 5m radius
+        state = Eigen::VectorXf::Zero(4);
+        state << 0, 0, 3.0, 3.0; // Assume initial curve with 5m radius
 
         // Initialize covariance matrix
-        P = Eigen::MatrixXf::Identity(6,6) * 0.1;
+        P = Eigen::MatrixXf::Identity(4,4) * 0.1;
 
         // Process and measurement noise
-        Q = Eigen::MatrixXf::Identity(6,6) * 0.01;
-        R = Eigen::MatrixXf::Identity(6,6) * 0.5;
-        I = Eigen::MatrixXf::Identity(6,6);
+        Q = Eigen::MatrixXf::Identity(4,4) * 0.01;
+        R = Eigen::MatrixXf::Identity(4,4) * 0.5;
+        I = Eigen::MatrixXf::Identity(4,4);
 
         // State transition model (assume slow-moving lane changes)
-        F = Eigen::MatrixXf::Identity(6,6);
+        F = Eigen::MatrixXf::Identity(4,4);
 
 
 
@@ -198,39 +198,37 @@ private:
         }
 
         // Fit circles to left and right lane markings
-        Eigen::Vector3f left_circle, right_circle;
+        Eigen::Vector2f center;
+        float left_radius, right_radius;
+
         //fitCircle(white_cloud, leftmost_cluster, left_circle);
         //RCLCPP_INFO(this->get_logger(), "Circle 1: x=%f, y=%f, r=%f", left_circle[0], left_circle[1], left_circle[2]);
 
         //fitCircle(white_cloud, rightmost_cluster, right_circle);
         //RCLCPP_INFO(this->get_logger(), "Circle 1: x=%f, y=%f, r=%f", right_circle[0], right_circle[1], right_circle[2]);
         
-        Eigen::VectorXf Z(6); // Ensure correct size
+        Eigen::VectorXf Z(4); // Ensure correct size
 
         if (left_detected && right_detected)
         {
-            fitCircle(white_cloud, leftmost_cluster, left_circle);
-            fitCircle(white_cloud, rightmost_cluster, right_circle);
+            fitCircles(white_cloud, leftmost_cluster, rightmost_cluster, center, left_radius, right_radius);
 
-            Z << left_circle[0], left_circle[1], left_circle[2], 
-                right_circle[0], right_circle[1], right_circle[2];
+            Z << center[0], center[1], left_radius, right_radius;
 
 
         }
         else if (left_detected)
         {
-            fitCircle(white_cloud, leftmost_cluster, left_circle);
-            Z << left_circle[0], left_circle[1], left_circle[2], 
-                state[3], state[4], state[5]; // Keep last known right lane estimate
+            fitCircles(white_cloud, leftmost_cluster, rightmost_cluster, center, left_radius, right_radius);
+            Z << center[0], center[1], left_radius, state[3]; // Keep last known right lane estimate
 
 
         }
         else if (right_detected)
         {
-            fitCircle(white_cloud, rightmost_cluster, right_circle);
-            Z << state[0], state[1], state[2],  
-                right_circle[0], right_circle[1], right_circle[2];
-
+            fitCircles(white_cloud, leftmost_cluster, rightmost_cluster, center, left_radius, right_radius);
+            Z << center[0], center[1], state[2], right_radius;
+            RCLCPP_INFO(this->get_logger(), "OI");
         }
         else
         {
@@ -248,104 +246,187 @@ private:
         state = state + K * (Z - state);
         P = (I - K) * P;
 
-        Eigen::Vector3f left_state = Z.head<3>(); 
-        Eigen::Vector3f right_state = Z.tail<3>();
+        Eigen::Vector2f common_center = Z.head<2>(); 
         //(float left_start_angle, left_end_angle, right_start_angle, right_end_angle;
-        if(right_detected) computeArcAngles(white_cloud, rightmost_cluster, right_state, right_start_angle, right_end_angle);
-        if(left_detected) computeArcAngles(white_cloud, leftmost_cluster, left_state, left_start_angle, left_end_angle);
+        if(right_detected) computeArcAngles(white_cloud, rightmost_cluster, common_center, right_start_angle, right_end_angle);
+        if(left_detected) computeArcAngles(white_cloud, leftmost_cluster, common_center, left_start_angle, left_end_angle);
         //computeArcAngles(white_cloud, leftmost_cluster, left_circle, left_start_angle, left_end_angle);
         //computeArcAngles(white_cloud, rightmost_cluster, right_circle, right_start_angle, right_end_angle);
 
-        visualizeCircles(left_circle, right_circle, state, left_start_angle, left_end_angle, right_start_angle, right_end_angle, left_detected, right_detected);
+        visualizeCircles(common_center, left_radius, right_radius, state, left_start_angle, left_end_angle, right_start_angle, right_end_angle, left_detected, right_detected);
     }
 
+    
 
-    bool fitCircle(const pcl::PointCloud<pcl::PointXYZ>::Ptr &cloud, const pcl::PointIndices &indices, Eigen::Vector3f &circle)
+
+
+    bool fitSingleCircle(const pcl::PointCloud<pcl::PointXYZ>::Ptr &cloud,
+        const pcl::PointIndices &indices,
+        Eigen::Vector2f &center,
+        float &radius)
     {
-        if (indices.indices.size() < 3)
-            return false;
+    if (indices.indices.size() < 3)
+    return false;
 
-        std::vector<Eigen::Vector2f> points;
-        for (int idx : indices.indices)
-        {
-            points.emplace_back(cloud->points[idx].x, cloud->points[idx].y);
-        }
+    float sum_x = 0, sum_y = 0, sum_x2 = 0, sum_y2 = 0, sum_xy = 0;
+    float sum_x3 = 0, sum_y3 = 0, sum_x2y = 0, sum_xy2 = 0;
+    int N = indices.indices.size();
 
-        int N = points.size();
-        if (N < 3)
-            return false;
+    for (int idx : indices.indices)
+    {
+    float x = cloud->points[idx].x;
+    float y = cloud->points[idx].y;
+    float x2 = x * x, y2 = y * y;
 
-        float sum_x = 0, sum_y = 0, sum_x2 = 0, sum_y2 = 0;
-        float sum_xy = 0, sum_x3 = 0, sum_y3 = 0;
-        float sum_x2y = 0, sum_xy2 = 0;
-
-        for (const auto &p : points)
-        {
-            float x = p[0], y = p[1];
-            float x2 = x * x, y2 = y * y;
-
-            sum_x += x;
-            sum_y += y;
-            sum_x2 += x2;
-            sum_y2 += y2;
-            sum_xy += x * y;
-            sum_x3 += x2 * x;
-            sum_y3 += y2 * y;
-            sum_x2y += x2 * y;
-            sum_xy2 += x * y2;
-        }
-
-        Eigen::Matrix3f A;
-        Eigen::Vector3f B;
-
-        A << sum_x2, sum_xy, sum_x,
-            sum_xy, sum_y2, sum_y,
-            sum_x, sum_y, N;
-
-        B << (sum_x3 + sum_xy2) / 2,
-            (sum_y3 + sum_x2y) / 2,
-            (sum_x2 + sum_y2) / 2;
-
-        Eigen::Vector3f solution = A.colPivHouseholderQr().solve(B);
-        
-        float x_c = solution[0];
-        float y_c = solution[1];
-
-        // Compute radius using average distance to all points
-        float r = 0;
-        for (const auto &p : points)
-        {
-            r += std::sqrt((p[0] - x_c) * (p[0] - x_c) + (p[1] - y_c) * (p[1] - y_c));
-        }
-        r /= N;  // Take the average
-
-        circle = Eigen::Vector3f(x_c, y_c, r);
-        return true;
+    sum_x += x;
+    sum_y += y;
+    sum_x2 += x2;
+    sum_y2 += y2;
+    sum_xy += x * y;
+    sum_x3 += x2 * x;
+    sum_y3 += y2 * y;
+    sum_x2y += x2 * y;
+    sum_xy2 += x * y2;
     }
 
+    Eigen::Matrix3f A;
+    Eigen::Vector3f B;
+
+    A << sum_x2, sum_xy, sum_x,
+    sum_xy, sum_y2, sum_y,
+    sum_x,  sum_y,  N;
+
+    B << (sum_x3 + sum_xy2) / 2,
+    (sum_y3 + sum_x2y) / 2,
+    (sum_x2 + sum_y2) / 2;
+
+    Eigen::Vector3f solution = A.colPivHouseholderQr().solve(B);
+    center = solution.head<2>();
+
+    radius = 0;
+    for (int idx : indices.indices)
+    {
+    Eigen::Vector2f p(cloud->points[idx].x, cloud->points[idx].y);
+    radius += (p - center).norm();
+    }
+    radius /= N;
+
+    return true;
+    }
+
+    // Function to compute radius given a fixed center
+    float computeRadius(const pcl::PointCloud<pcl::PointXYZ>::Ptr &cloud,
+        const pcl::PointIndices &indices,
+        const Eigen::Vector2f &fixed_center)
+    {
+    float radius = 0;
+    for (int idx : indices.indices)
+    {
+    Eigen::Vector2f p(cloud->points[idx].x, cloud->points[idx].y);
+    radius += (p - fixed_center).norm();
+    }
+    return radius / indices.indices.size();
+    }
+
+    // Function to fit both circles using the new strategy
+    bool fitCircles(const pcl::PointCloud<pcl::PointXYZ>::Ptr &cloud,
+    const pcl::PointIndices &left_indices,
+    const pcl::PointIndices &right_indices,
+    Eigen::Vector2f &best_center,
+    float &best_left_radius,
+    float &best_right_radius)
+    {
+    if (left_indices.indices.size() < 3 || right_indices.indices.size() < 3)
+    return false;
+
+    Eigen::Vector2f center_left, center_right;
+    float radius_left, radius_right;
+
+    // Fit left cluster independently
+    fitSingleCircle(cloud, left_indices, center_left, radius_left);
+    // Fit right cluster independently
+    fitSingleCircle(cloud, right_indices, center_right, radius_right);
+
+    // Compute radii with forced centers
+    float radius_right_forced = computeRadius(cloud, right_indices, center_left);
+    float radius_left_forced = computeRadius(cloud, left_indices, center_right);
+
+    // Compute total fitting error for both solutions
+    float error_left_forced = 0, error_right_forced = 0;
+    for (int idx : left_indices.indices)
+    {
+    Eigen::Vector2f p(cloud->points[idx].x, cloud->points[idx].y);
+    error_left_forced += std::abs((p - center_right).norm() - radius_left_forced);
+    }
+    for (int idx : right_indices.indices)
+    {
+    Eigen::Vector2f p(cloud->points[idx].x, cloud->points[idx].y);
+    error_left_forced += std::abs((p - center_right).norm() - radius_right);
+    }
+
+    for (int idx : left_indices.indices)
+    {
+    Eigen::Vector2f p(cloud->points[idx].x, cloud->points[idx].y);
+    error_right_forced += std::abs((p - center_left).norm() - radius_left);
+    }
+    for (int idx : right_indices.indices)
+    {
+    Eigen::Vector2f p(cloud->points[idx].x, cloud->points[idx].y);
+    error_right_forced += std::abs((p - center_left).norm() - radius_right_forced);
+    }
+
+    // Choose the best solution based on total error
+    if (error_left_forced < error_right_forced)
+    {
+    best_center = center_right;
+    best_left_radius = radius_left_forced;
+    best_right_radius = radius_right;
+    }
+    else
+    {
+    best_center = center_left;
+    best_left_radius = radius_left;
+    best_right_radius = radius_right_forced;
+    }
+
+    return true;
+    }
+    
+
+    
 
 
 
 
-    void visualizeCircles(const Eigen::Vector3f &left_circle, const Eigen::Vector3f &right_circle, 
+
+
+    void visualizeCircles(const Eigen::Vector2f &center, float left_radius, float right_radius, 
         const Eigen::VectorXf &filtered_state, float left_start_angle, float left_end_angle, 
         float right_start_angle, float right_end_angle, bool left_detected, bool right_detected)
     {
         visualization_msgs::msg::MarkerArray marker_array;
-
-        // Visualize only the relevant parts of the circle
-        if(left_detected) marker_array.markers.push_back(createArcMarker(left_circle, 0, 0.0, 0.0, 1.0, left_start_angle, left_end_angle));  // Blue
-        if(right_detected) marker_array.markers.push_back(createArcMarker(right_circle, 1, 1.0, 0.0, 0.0, right_start_angle, right_end_angle)); // Red
-
-        // Kalman-filtered arcs
-        Eigen::Vector3f filtered_circle_left(filtered_state[0], filtered_state[1], filtered_state[2]);
-        Eigen::Vector3f filtered_circle_right(filtered_state[3], filtered_state[4], filtered_state[5]);
-
-        marker_array.markers.push_back(createArcMarker(filtered_circle_left, 2, 0.0, 1.0, 0.0, left_start_angle, left_end_angle)); // Green
-        marker_array.markers.push_back(createArcMarker(filtered_circle_right, 3, 1.0, 1.0, 0.0, right_start_angle, right_end_angle)); // Yellow
-
+    
+        // Reconstruct circles using the shared center
+        Eigen::Vector3f left_circle(center[0], center[1], left_radius);
+        Eigen::Vector3f right_circle(center[0], center[1], right_radius);
+    
+        // Visualize only the relevant parts of the circles
+        if (left_detected)  
+            marker_array.markers.push_back(createArcMarker(left_circle, 0, 0.0, 0.0, 1.0, left_start_angle, left_end_angle));  // Blue
+        
+        if (right_detected)  
+            marker_array.markers.push_back(createArcMarker(right_circle, 1, 1.0, 0.0, 0.0, right_start_angle, right_end_angle)); // Red
+    
+        // Kalman-filtered state
+        Eigen::Vector3f filtered_left_circle(filtered_state[0], filtered_state[1], filtered_state[2]);
+        Eigen::Vector3f filtered_right_circle(filtered_state[0], filtered_state[1], filtered_state[3]); // Same center, different radius
+    
+        marker_array.markers.push_back(createArcMarker(filtered_left_circle, 2, 0.0, 1.0, 0.0, left_start_angle, left_end_angle)); // Green
+        marker_array.markers.push_back(createArcMarker(filtered_right_circle, 3, 1.0, 1.0, 0.0, right_start_angle, right_end_angle)); // Yellow
+    
         curve_publisher_->publish(marker_array);
     }
+    
 
 
     visualization_msgs::msg::Marker createArcMarker(const Eigen::Vector3f &circle, int id, float r, float g, float b)
@@ -466,7 +547,7 @@ private:
         std::vector<pcl::PointIndices> filtered_clusters;
         for (const auto &cd : cluster_data)
         {
-            if (cd.depth >= 0.3) // Adjust this threshold as needed
+            if (cd.depth >= 0.25) // Adjust this threshold as needed
             {
                 filtered_clusters.push_back(cd.indices);
             }
@@ -482,32 +563,33 @@ private:
 
     void computeArcAngles(const pcl::PointCloud<pcl::PointXYZ>::Ptr &cloud, 
         const pcl::PointIndices &cluster, 
-        const Eigen::Vector3f &circle, 
+        const Eigen::Vector2f &center, // Only (x, y) now
         float &start_angle, float &end_angle)
     {
         if (cluster.indices.empty())
         {
-        return;
+            return;
         }
-
+    
         float min_angle = std::numeric_limits<float>::infinity();
         float max_angle = -std::numeric_limits<float>::infinity();
-
+    
         for (int idx : cluster.indices)
         {
-        float x = cloud->points[idx].x;
-        float y = cloud->points[idx].y;
-
-        // Compute angle relative to the circle center
-        float theta = atan2(y - circle[1], x - circle[0]);
-
-        min_angle = std::min(min_angle, theta);
-        max_angle = std::max(max_angle, theta);
+            float x = cloud->points[idx].x;
+            float y = cloud->points[idx].y;
+    
+            // Compute angle relative to the shared center
+            float theta = atan2(y - center[1], x - center[0]);
+    
+            min_angle = std::min(min_angle, theta);
+            max_angle = std::max(max_angle, theta);
         }
-
+    
         start_angle = min_angle;
         end_angle = max_angle;
     }
+    
 
     visualization_msgs::msg::Marker createArcMarker(const Eigen::Vector3f &circle, 
         int id, float r, float g, float b, 

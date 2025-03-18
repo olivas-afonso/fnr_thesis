@@ -166,6 +166,28 @@ target_link_libraries(test_cluster
       # Ensure this is linked correctly
 )
 
+add_executable(same_center src/same_center.cpp)
+
+ament_target_dependencies(same_center
+  rclcpp
+  std_msgs
+  sensor_msgs
+  pcl_ros
+  pcl_conversions
+  visualization_msgs
+  tf2
+  tf2_ros
+  tf2_sensor_msgs
+  
+)
+
+target_link_libraries(same_center
+    ${OpenCV_LIBS}
+    tf2::tf2
+    tf2_ros::tf2_ros
+      # Ensure this is linked correctly
+)
+
 
 
 install(TARGETS
@@ -178,6 +200,7 @@ install(TARGETS
   kalman_rel
   circle_kalman
   test_cluster
+  same_center
   DESTINATION lib/${PROJECT_NAME}
 )
 
