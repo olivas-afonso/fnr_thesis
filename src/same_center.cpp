@@ -50,6 +50,8 @@ public:
     
         curve_publisher_ = this->create_publisher<visualization_msgs::msg::MarkerArray>("line_fit_original", 10);
         cluster_marker_pub_ = this->create_publisher<visualization_msgs::msg::MarkerArray>("clusters", 10);
+        test_cluster_marker_pub_ = this->create_publisher<visualization_msgs::msg::MarkerArray>("test_clusters", 10);
+
 
         this->declare_parameter("fit_side", true);
         this->get_parameter("fit_side", fit_side_);
@@ -219,16 +221,62 @@ private:
         }
         else if (left_detected)
         {
-            fitCircles(white_cloud, leftmost_cluster, rightmost_cluster, center, left_radius, right_radius);
-            Z << center[0], center[1], left_radius, state[3]; // Keep last known right lane estimate
-
-
+            // Extract rotation matrix from quaternion
+            tf2::Quaternion q(
+                current_pose_.pose.orientation.x,
+                current_pose_.pose.orientation.y,
+                current_pose_.pose.orientation.z,
+                current_pose_.pose.orientation.w);
+            tf2::Matrix3x3 rotation_matrix(q);
+        
+            // Compute shift in world coordinates
+            tf2::Vector3 lane_offset = rotation_matrix * tf2::Vector3(1.5, 0, 0); // Shift 1.5m to the right
+        
+            // Create an estimated right cluster using transformed points
+            pcl::PointIndices estimated_right_indices;
+            for (int idx : leftmost_cluster.indices)
+            {
+                pcl::PointXYZ p = white_cloud->points[idx];
+                p.x += lane_offset.x();
+                p.y += lane_offset.y();
+                p.z += lane_offset.z(); // Probably negligible but included for accuracy
+                estimated_right_indices.indices.push_back(idx);
+            }
+        
+            // Now fit circles as usual
+            fitCircles(white_cloud, leftmost_cluster, estimated_right_indices, center, left_radius, right_radius);
+        
+            Z << center[0], center[1], left_radius, right_radius;
         }
+
         else if (right_detected)
         {
-            fitCircles(white_cloud, leftmost_cluster, rightmost_cluster, center, left_radius, right_radius);
-            Z << center[0], center[1], state[2], right_radius;
-            RCLCPP_INFO(this->get_logger(), "OI");
+            // Extract rotation matrix from quaternion
+            tf2::Quaternion q(
+                current_pose_.pose.orientation.x,
+                current_pose_.pose.orientation.y,
+                current_pose_.pose.orientation.z,
+                current_pose_.pose.orientation.w);
+            tf2::Matrix3x3 rotation_matrix(q);
+
+            // Compute shift in world coordinates
+            tf2::Vector3 lane_offset = rotation_matrix * tf2::Vector3(-1.5, 0, 0); // Shift 1.5m to the left
+
+            // Create an estimated left cluster using transformed points
+            pcl::PointIndices estimated_left_indices;
+            for (int idx : rightmost_cluster.indices)
+            {
+                pcl::PointXYZ p = white_cloud->points[idx];
+                p.x += lane_offset.x();
+                p.y += lane_offset.y();
+                p.z += lane_offset.z(); // Probably negligible but included for accuracy
+                estimated_left_indices.indices.push_back(idx);
+            }
+            testClusterMarkers(white_cloud, estimated_left_indices, rightmost_cluster);
+            // Now fit circles as usual
+            fitCircles(white_cloud, estimated_left_indices, rightmost_cluster, center, left_radius, right_radius);
+
+            Z << center[0], center[1], left_radius, right_radius;
         }
         else
         {
@@ -260,143 +308,131 @@ private:
 
 
 
-    bool fitSingleCircle(const pcl::PointCloud<pcl::PointXYZ>::Ptr &cloud,
-        const pcl::PointIndices &indices,
-        Eigen::Vector2f &center,
-        float &radius)
+    bool fitSingleCircle(const pcl::PointCloud<pcl::PointXYZ>::Ptr &cloud, const pcl::PointIndices &indices, Eigen::Vector2f &center, float &radius)
     {
-    if (indices.indices.size() < 3)
-    return false;
+        if (indices.indices.size() < 3)
+            return false;
 
-    float sum_x = 0, sum_y = 0, sum_x2 = 0, sum_y2 = 0, sum_xy = 0;
-    float sum_x3 = 0, sum_y3 = 0, sum_x2y = 0, sum_xy2 = 0;
-    int N = indices.indices.size();
+        float sum_x = 0, sum_y = 0, sum_x2 = 0, sum_y2 = 0, sum_xy = 0;
+        float sum_x3 = 0, sum_y3 = 0, sum_x2y = 0, sum_xy2 = 0;
+        int N = indices.indices.size();
 
-    for (int idx : indices.indices)
-    {
-    float x = cloud->points[idx].x;
-    float y = cloud->points[idx].y;
-    float x2 = x * x, y2 = y * y;
+        for (int idx : indices.indices)
+        {
+            float x = cloud->points[idx].x;
+            float y = cloud->points[idx].y;
+            float x2 = x * x, y2 = y * y;
 
-    sum_x += x;
-    sum_y += y;
-    sum_x2 += x2;
-    sum_y2 += y2;
-    sum_xy += x * y;
-    sum_x3 += x2 * x;
-    sum_y3 += y2 * y;
-    sum_x2y += x2 * y;
-    sum_xy2 += x * y2;
+            sum_x += x;
+            sum_y += y;
+            sum_x2 += x2;
+            sum_y2 += y2;
+            sum_xy += x * y;
+            sum_x3 += x2 * x;
+            sum_y3 += y2 * y;
+            sum_x2y += x2 * y;
+            sum_xy2 += x * y2;
+        }
+
+        Eigen::Matrix3f A;
+        Eigen::Vector3f B;
+
+        A << sum_x2, sum_xy, sum_x,
+        sum_xy, sum_y2, sum_y,
+        sum_x,  sum_y,  N;
+
+        B << (sum_x3 + sum_xy2) / 2,
+        (sum_y3 + sum_x2y) / 2,
+        (sum_x2 + sum_y2) / 2;
+
+        Eigen::Vector3f solution = A.colPivHouseholderQr().solve(B);
+        center = solution.head<2>();
+
+        radius = 0;
+        for (int idx : indices.indices)
+        {
+            Eigen::Vector2f p(cloud->points[idx].x, cloud->points[idx].y);
+            radius += (p - center).norm();
+        }
+        radius /= N;
+
+        return true;
     }
 
-    Eigen::Matrix3f A;
-    Eigen::Vector3f B;
-
-    A << sum_x2, sum_xy, sum_x,
-    sum_xy, sum_y2, sum_y,
-    sum_x,  sum_y,  N;
-
-    B << (sum_x3 + sum_xy2) / 2,
-    (sum_y3 + sum_x2y) / 2,
-    (sum_x2 + sum_y2) / 2;
-
-    Eigen::Vector3f solution = A.colPivHouseholderQr().solve(B);
-    center = solution.head<2>();
-
-    radius = 0;
-    for (int idx : indices.indices)
+        // Function to compute radius given a fixed center
+    float computeRadius(const pcl::PointCloud<pcl::PointXYZ>::Ptr &cloud, const pcl::PointIndices &indices, const Eigen::Vector2f &fixed_center)
     {
-    Eigen::Vector2f p(cloud->points[idx].x, cloud->points[idx].y);
-    radius += (p - center).norm();
-    }
-    radius /= N;
-
-    return true;
+        float radius = 0;
+        for (int idx : indices.indices)
+        {
+            Eigen::Vector2f p(cloud->points[idx].x, cloud->points[idx].y);
+            radius += (p - fixed_center).norm();
+        }
+        return radius / indices.indices.size();
     }
 
-    // Function to compute radius given a fixed center
-    float computeRadius(const pcl::PointCloud<pcl::PointXYZ>::Ptr &cloud,
-        const pcl::PointIndices &indices,
-        const Eigen::Vector2f &fixed_center)
+        // Function to fit both circles using the new strategy
+    bool fitCircles(const pcl::PointCloud<pcl::PointXYZ>::Ptr &cloud, const pcl::PointIndices &left_indices, const pcl::PointIndices &right_indices,
+        Eigen::Vector2f &best_center, float &best_left_radius, float &best_right_radius)
     {
-    float radius = 0;
-    for (int idx : indices.indices)
-    {
-    Eigen::Vector2f p(cloud->points[idx].x, cloud->points[idx].y);
-    radius += (p - fixed_center).norm();
-    }
-    return radius / indices.indices.size();
-    }
+        if (left_indices.indices.size() < 3 || right_indices.indices.size() < 3)
+        return false;
 
-    // Function to fit both circles using the new strategy
-    bool fitCircles(const pcl::PointCloud<pcl::PointXYZ>::Ptr &cloud,
-    const pcl::PointIndices &left_indices,
-    const pcl::PointIndices &right_indices,
-    Eigen::Vector2f &best_center,
-    float &best_left_radius,
-    float &best_right_radius)
-    {
-    if (left_indices.indices.size() < 3 || right_indices.indices.size() < 3)
-    return false;
+        Eigen::Vector2f center_left, center_right;
+        float radius_left, radius_right;
 
-    Eigen::Vector2f center_left, center_right;
-    float radius_left, radius_right;
+        // Fit left cluster independently
+        fitSingleCircle(cloud, left_indices, center_left, radius_left);
+        // Fit right cluster independently
+        fitSingleCircle(cloud, right_indices, center_right, radius_right);
 
-    // Fit left cluster independently
-    fitSingleCircle(cloud, left_indices, center_left, radius_left);
-    // Fit right cluster independently
-    fitSingleCircle(cloud, right_indices, center_right, radius_right);
+        // Compute radii with forced centers
+        float radius_right_forced = computeRadius(cloud, right_indices, center_left);
+        float radius_left_forced = computeRadius(cloud, left_indices, center_right);
 
-    // Compute radii with forced centers
-    float radius_right_forced = computeRadius(cloud, right_indices, center_left);
-    float radius_left_forced = computeRadius(cloud, left_indices, center_right);
+        // Compute total fitting error for both solutions
+        float error_left_forced = 0, error_right_forced = 0;
+        for (int idx : left_indices.indices)
+        {
+            Eigen::Vector2f p(cloud->points[idx].x, cloud->points[idx].y);
+            error_left_forced += std::abs((p - center_right).norm() - radius_left_forced);
+        }
+        for (int idx : right_indices.indices)
+        {
+            Eigen::Vector2f p(cloud->points[idx].x, cloud->points[idx].y);
+            error_left_forced += std::abs((p - center_right).norm() - radius_right);
+        }
 
-    // Compute total fitting error for both solutions
-    float error_left_forced = 0, error_right_forced = 0;
-    for (int idx : left_indices.indices)
-    {
-    Eigen::Vector2f p(cloud->points[idx].x, cloud->points[idx].y);
-    error_left_forced += std::abs((p - center_right).norm() - radius_left_forced);
-    }
-    for (int idx : right_indices.indices)
-    {
-    Eigen::Vector2f p(cloud->points[idx].x, cloud->points[idx].y);
-    error_left_forced += std::abs((p - center_right).norm() - radius_right);
-    }
+        for (int idx : left_indices.indices)
+        {
+            Eigen::Vector2f p(cloud->points[idx].x, cloud->points[idx].y);
+            error_right_forced += std::abs((p - center_left).norm() - radius_left);
+        }
+        for (int idx : right_indices.indices)
+        {
+            Eigen::Vector2f p(cloud->points[idx].x, cloud->points[idx].y);
+            error_right_forced += std::abs((p - center_left).norm() - radius_right_forced);
+        }
 
-    for (int idx : left_indices.indices)
-    {
-    Eigen::Vector2f p(cloud->points[idx].x, cloud->points[idx].y);
-    error_right_forced += std::abs((p - center_left).norm() - radius_left);
-    }
-    for (int idx : right_indices.indices)
-    {
-    Eigen::Vector2f p(cloud->points[idx].x, cloud->points[idx].y);
-    error_right_forced += std::abs((p - center_left).norm() - radius_right_forced);
-    }
+        // Choose the best solution based on total error
+        if (error_left_forced < error_right_forced)
+        {
+            best_center = center_right;
+            best_left_radius = radius_left_forced;
+            best_right_radius = radius_right;
+        }
+        else
+            {
+            best_center = center_left;
+            best_left_radius = radius_left;
+            best_right_radius = radius_right_forced;
+        }
 
-    // Choose the best solution based on total error
-    if (error_left_forced < error_right_forced)
-    {
-    best_center = center_right;
-    best_left_radius = radius_left_forced;
-    best_right_radius = radius_right;
-    }
-    else
-    {
-    best_center = center_left;
-    best_left_radius = radius_left;
-    best_right_radius = radius_right_forced;
-    }
-
-    return true;
+        return true;
     }
     
 
     
-
-
-
 
 
 
@@ -459,9 +495,7 @@ private:
 
 
 
-    std::vector<pcl::PointIndices> clusterWhitePoints(
-        pcl::PointCloud<pcl::PointXYZ>::Ptr cloud,
-        const geometry_msgs::msg::Pose &current_pose_) // Camera pose
+    std::vector<pcl::PointIndices> clusterWhitePoints( pcl::PointCloud<pcl::PointXYZ>::Ptr cloud,const geometry_msgs::msg::Pose &current_pose_) // Camera pose
     {
         pcl::search::KdTree<pcl::PointXYZ>::Ptr tree(new pcl::search::KdTree<pcl::PointXYZ>());
         tree->setInputCloud(cloud);
@@ -547,7 +581,7 @@ private:
         std::vector<pcl::PointIndices> filtered_clusters;
         for (const auto &cd : cluster_data)
         {
-            if (cd.depth >= 0.25) // Adjust this threshold as needed
+            if (cd.depth >= 0.2) // Adjust this threshold as needed
             {
                 filtered_clusters.push_back(cd.indices);
             }
@@ -686,6 +720,54 @@ private:
         cluster_marker_pub_->publish(cluster_markers);
     }
 
+    void testClusterMarkers(pcl::PointCloud<pcl::PointXYZ>::Ptr cloud, 
+        const pcl::PointIndices& left_indices, 
+        const pcl::PointIndices& right_indices)
+    {
+    visualization_msgs::msg::MarkerArray cluster_markers;
+
+    // Define colors for left (red) and right (blue) clusters
+    std::vector<std::tuple<float, float, float>> colors = {{1.0, 0.0, 0.0},  // Left cluster (Red)
+                                            {0.0, 0.0, 1.0}}; // Right cluster (Blue)
+
+    // Helper lambda to create markers
+    auto createMarker = [&](const pcl::PointIndices& indices, int id, const std::tuple<float, float, float>& color) {
+    visualization_msgs::msg::Marker marker;
+    marker.header.frame_id = "map";
+    marker.header.stamp = this->get_clock()->now();
+    marker.ns = "clusters";
+    marker.id = id;
+    marker.type = visualization_msgs::msg::Marker::SPHERE_LIST;
+    marker.scale.x = 0.05;
+    marker.scale.y = 0.05;
+    marker.scale.z = 0.05;
+
+    auto [r, g, b] = color;
+    marker.color.r = r;
+    marker.color.g = g;
+    marker.color.b = b;
+    marker.color.a = 1.0;
+
+    for (int idx : indices.indices)
+    {
+    geometry_msgs::msg::Point p;
+    p.x = cloud->points[idx].x;
+    p.y = cloud->points[idx].y;
+    p.z = cloud->points[idx].z;
+    marker.points.push_back(p);
+    }
+
+    return marker;
+    };
+
+    // Add left and right cluster markers
+    cluster_markers.markers.push_back(createMarker(left_indices, 0, colors[0]));  // Left
+    cluster_markers.markers.push_back(createMarker(right_indices, 1, colors[1])); // Right
+
+    // Publish the markers
+    test_cluster_marker_pub_->publish(cluster_markers);
+    }
+
     rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr subscription_;
     rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr pose_subscription_;
     geometry_msgs::msg::PoseStamped current_pose_;
@@ -694,6 +776,7 @@ private:
     rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr curve_publisher_;
     //rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr marker_publisher2_;
     rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr cluster_marker_pub_;
+    rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr test_cluster_marker_pub_;
     rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr marker_pub_;
 
 

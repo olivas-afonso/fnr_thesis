@@ -1,0 +1,12 @@
+recording zed2i bags:
+
+ros2 bag record -o left_facing_curve /tf /tf_static /zed/zed_node/left/camera_info /zed/zed_node/right/camera_info /zed/zed_node/depth/depth_registered /zed/zed_node/point_cloud/cloud_registered /zed/zed_node/rgb/image_rect_color /zed/zed_node/odom /zed/zed_node/pose --compression-mode none
+
+launch rviz2 with this command (sets sim_time to true on launch):
+
+ros2 run rviz2 rviz2 --ros-args -p use_sim_time:=true
+
+and then run the bag:
+
+ros2 bag play left_facing_curve/ --loop --clock
+
