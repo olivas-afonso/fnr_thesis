@@ -213,72 +213,31 @@ private:
         //RCLCPP_INFO(this->get_logger(), "Circle 1: x=%f, y=%f, r=%f", right_circle[0], right_circle[1], right_circle[2]);
         
         Eigen::VectorXf Z(4); // Ensure correct size
-
-        if (left_detected && right_detected)
-        {
+        left_detected=true;
+        right_detected=false;
+        if (left_detected && right_detected) {
+            // Both clusters detected: fit circles as usual
             fitCircles(white_cloud, leftmost_cluster, rightmost_cluster, current_pose_.pose, center, left_radius, right_radius);
-
             Z << center[0], center[1], left_radius, right_radius;
-
-
-        }
-        else if (left_detected)
-        {
-            // Extract rotation matrix from quaternion
-            tf2::Quaternion q(
-                current_pose_.pose.orientation.x,
-                current_pose_.pose.orientation.y,
-                current_pose_.pose.orientation.z,
-                current_pose_.pose.orientation.w);
-            tf2::Matrix3x3 rotation_matrix(q);
+        } else if (left_detected) {
+            // Only left cluster detected: fit a single circle to the left cluster
+            fitSingleCircle(white_cloud, leftmost_cluster, current_pose_.pose, center, left_radius);
         
-            // Compute shift in world coordinates
-            tf2::Vector3 lane_offset = rotation_matrix * tf2::Vector3(1.5, 0, 0); // Shift 1.5m to the right
-        
-            // Create an estimated right cluster using transformed points
-            pcl::PointIndices estimated_right_indices;
-            for (int idx : leftmost_cluster.indices)
-            {
-                pcl::PointXYZ p = white_cloud->points[idx];
-                p.x += lane_offset.x();
-                p.y += lane_offset.y();
-                p.z += lane_offset.z(); // Probably negligible but included for accuracy
-                estimated_right_indices.indices.push_back(idx);
-            }
-        
-            // Now fit circles as usual
-            fitCircles(white_cloud, leftmost_cluster, estimated_right_indices,current_pose_.pose, center, left_radius, right_radius);
+            // Derive the right cluster based on the known lane width
+            float lane_width = 1.4f;  // Known lane width in meters
+            Eigen::Vector2f right_center = center; 
+            float right_radius = left_radius + lane_width;  // Assume the same radius for simplicity
         
             Z << center[0], center[1], left_radius, right_radius;
-        }
-
-        else if (right_detected)
-        {
-            // Extract rotation matrix from quaternion
-            tf2::Quaternion q(
-                current_pose_.pose.orientation.x,
-                current_pose_.pose.orientation.y,
-                current_pose_.pose.orientation.z,
-                current_pose_.pose.orientation.w);
-            tf2::Matrix3x3 rotation_matrix(q);
-
-            // Compute shift in world coordinates
-            tf2::Vector3 lane_offset = rotation_matrix * tf2::Vector3(-1.5, 0, 0); // Shift 1.5m to the left
-
-            // Create an estimated left cluster using transformed points
-            pcl::PointIndices estimated_left_indices;
-            for (int idx : rightmost_cluster.indices)
-            {
-                pcl::PointXYZ p = white_cloud->points[idx];
-                p.x += lane_offset.x();
-                p.y += lane_offset.y();
-                p.z += lane_offset.z(); // Probably negligible but included for accuracy
-                estimated_left_indices.indices.push_back(idx);
-            }
-            testClusterMarkers(white_cloud, estimated_left_indices, rightmost_cluster);
-            // Now fit circles as usual
-            fitCircles(white_cloud, estimated_left_indices, rightmost_cluster,current_pose_.pose, center, left_radius, right_radius);
-
+        } else if (right_detected) {
+            // Only right cluster detected: fit a single circle to the right cluster
+            fitSingleCircle(white_cloud, rightmost_cluster, current_pose_.pose, center, right_radius);
+        
+            // Derive the left cluster based on the known lane width
+            float lane_width = 1.5f;  // Known lane width in meters
+            Eigen::Vector2f left_center = center - lane_width * Eigen::Vector2f(1.0f, 0.0f);  // Shift to the left
+            float left_radius = right_radius;  // Assume the same radius for simplicity
+        
             Z << center[0], center[1], left_radius, right_radius;
         }
         else
@@ -304,28 +263,29 @@ private:
         //computeArcAngles(white_cloud, leftmost_cluster, left_circle, left_start_angle, left_end_angle);
         //computeArcAngles(white_cloud, rightmost_cluster, right_circle, right_start_angle, right_end_angle);
 
-        visualizeCircles(common_center, left_radius, right_radius, state, left_start_angle, left_end_angle, right_start_angle, right_end_angle, left_detected, right_detected);
+        //visualizeCircles(common_center, left_radius, right_radius, state, left_start_angle, left_end_angle, right_start_angle, right_end_angle, left_detected, right_detected);
+        visualizeCircles(common_center, left_radius, right_radius, state, left_start_angle, left_end_angle, left_start_angle, left_end_angle, left_detected, left_detected);
+
     }
 
     
-
-
-
-    struct CircleFittingCost {
-        CircleFittingCost(double x, double y) : x_(x), y_(y) {}
     
-        template <typename T>
-        bool operator()(const T* const center, const T* const radius, T* residual) const {
-            T dx = T(x_) - center[0];
-            T dy = T(y_) - center[1];
-            residual[0] = ceres::sqrt(dx * dx + dy * dy) - radius[0];
-            return true;
+    // Cost function to evaluate the fit of the circles
+    float evaluateFit(
+        const pcl::PointCloud<pcl::PointXYZ>::Ptr &cloud,
+        const pcl::PointIndices &indices,
+        const Eigen::Vector2f &center,
+        float radius)
+    {
+        float cost = 0.0f;
+        for (int idx : indices.indices) {
+            Eigen::Vector2f p(cloud->points[idx].x, cloud->points[idx].y);
+            float distance = (p - center).norm();
+            cost += (distance - radius) * (distance - radius);  // Squared error
         }
-    
-    private:
-        double x_, y_;
-    };
-    
+        return cost;
+    }
+
     bool fitCircles(
         const pcl::PointCloud<pcl::PointXYZ>::Ptr &cloud, 
         const pcl::PointIndices &left_indices, 
@@ -337,6 +297,138 @@ private:
     {
         if (left_indices.indices.size() < 3 || right_indices.indices.size() < 3) {
             std::cerr << "Error: Not enough points in one or both clusters!\n";
+            return false;
+        }
+
+        // Step 1: Extract camera position and orientation
+        Eigen::Vector3f camera_position(
+            current_pose_.position.x,
+            current_pose_.position.y,
+            current_pose_.position.z);
+
+        tf2::Quaternion q(
+            current_pose_.orientation.x,
+            current_pose_.orientation.y,
+            current_pose_.orientation.z,
+            current_pose_.orientation.w);
+        tf2::Matrix3x3 rotation_matrix(q);
+
+        // Convert tf2::Matrix3x3 to Eigen::Matrix3f
+        Eigen::Matrix3f rotation_matrix_eigen;
+        for (int i = 0; i < 3; ++i) {
+            for (int j = 0; j < 3; ++j) {
+                rotation_matrix_eigen(i, j) = rotation_matrix[i][j];
+            }
+        }
+
+        // Step 2: Transform the point cloud into the camera's reference frame
+        pcl::PointCloud<pcl::PointXYZ>::Ptr transformed_cloud(new pcl::PointCloud<pcl::PointXYZ>);
+        for (const auto &point : *cloud) {
+            Eigen::Vector3f point_in_world(point.x, point.y, point.z);
+            Eigen::Vector3f point_in_camera = rotation_matrix_eigen * (point_in_world - camera_position);
+            transformed_cloud->push_back(pcl::PointXYZ(point_in_camera.x(), point_in_camera.y(), point_in_camera.z()));
+        }
+
+        // Step 3: Compute the mean position of each cluster in the camera's frame
+        Eigen::Vector2f left_mean(0.0f, 0.0f);
+        for (int idx : left_indices.indices) {
+            left_mean.x() += transformed_cloud->points[idx].x;
+            left_mean.y() += transformed_cloud->points[idx].y;
+        }
+        left_mean /= left_indices.indices.size();
+
+        Eigen::Vector2f right_mean(0.0f, 0.0f);
+        for (int idx : right_indices.indices) {
+            right_mean.x() += transformed_cloud->points[idx].x;
+            right_mean.y() += transformed_cloud->points[idx].y;
+        }
+        right_mean /= right_indices.indices.size();
+
+        // Step 4: Determine the direction of the track
+        Eigen::Vector2f track_direction = (right_mean - left_mean).normalized();
+
+        // Step 5: Compute the initial shared center as the centroid of all points
+        Eigen::Vector2f center(0.0f, 0.0f);
+        int total_points = left_indices.indices.size() + right_indices.indices.size();
+
+        for (int idx : left_indices.indices) {
+            center.x() += transformed_cloud->points[idx].x;
+            center.y() += transformed_cloud->points[idx].y;
+        }
+        for (int idx : right_indices.indices) {
+            center.x() += transformed_cloud->points[idx].x;
+            center.y() += transformed_cloud->points[idx].y;
+        }
+        center /= total_points;
+
+        // Step 6: Iteratively adjust the center in the opposite direction of the track
+        float min_cost = std::numeric_limits<float>::max();
+        Eigen::Vector2f best_candidate_center = center;
+        float best_candidate_left_radius = 0.0f;
+        float best_candidate_right_radius = 0.0f;
+
+        float step_size = 0.1f;  // Step size for adjusting the center
+        int num_steps = 20;      // Number of steps to try in the opposite direction
+
+        for (int i = 0; i <= num_steps; ++i) {
+            // Move the center in the opposite direction of the track
+            Eigen::Vector2f candidate_center = center - i * step_size * track_direction;
+
+            // Compute the radii for the candidate center
+            float left_radius = 0.0f;
+            for (int idx : left_indices.indices) {
+                Eigen::Vector2f p(transformed_cloud->points[idx].x, transformed_cloud->points[idx].y);
+                left_radius += (p - candidate_center).norm();
+            }
+            left_radius /= left_indices.indices.size();
+
+            float right_radius = 0.0f;
+            for (int idx : right_indices.indices) {
+                Eigen::Vector2f p(transformed_cloud->points[idx].x, transformed_cloud->points[idx].y);
+                right_radius += (p - candidate_center).norm();
+            }
+            right_radius /= right_indices.indices.size();
+
+            // Evaluate the fit of the circles
+            float cost = evaluateFit(transformed_cloud, left_indices, candidate_center, left_radius) +
+                        evaluateFit(transformed_cloud, right_indices, candidate_center, right_radius);
+
+            // Update the best candidate if this one is better
+            if (cost < min_cost) {
+                min_cost = cost;
+                best_candidate_center = candidate_center;
+                best_candidate_left_radius = left_radius;
+                best_candidate_right_radius = right_radius;
+            }
+        }
+
+        // Step 7: Update the output variables
+        best_center = best_candidate_center;
+        best_left_radius = best_candidate_left_radius;
+        best_right_radius = best_candidate_right_radius;
+
+        // Print the results
+        std::cout << "Optimized Center: (" << best_center.x() << ", " << best_center.y() << ")\n";
+        std::cout << "Optimized Left Radius: " << best_left_radius << "\n";
+        std::cout << "Optimized Right Radius: " << best_right_radius << "\n";
+
+        return true;
+    }
+    
+
+    
+
+    
+
+    bool fitSingleCircle(
+        const pcl::PointCloud<pcl::PointXYZ>::Ptr &cloud, 
+        const pcl::PointIndices &indices,
+        const geometry_msgs::msg::Pose &current_pose_,
+        Eigen::Vector2f &best_center, 
+        float &best_radius)
+    {
+        if (indices.indices.size() < 3) {
+            std::cerr << "Error: Not enough points in the cluster!\n";
             return false;
         }
     
@@ -369,158 +461,102 @@ private:
             transformed_cloud->push_back(pcl::PointXYZ(point_in_camera.x(), point_in_camera.y(), point_in_camera.z()));
         }
     
-        // Step 3: Compute the initial center as the centroid of all points in the transformed cloud
+        // Step 3: Compute the mean position of the cluster in the camera's frame
+        Eigen::Vector2f cluster_mean(0.0f, 0.0f);
+        for (int idx : indices.indices) {
+            cluster_mean.x() += transformed_cloud->points[idx].x;
+            cluster_mean.y() += transformed_cloud->points[idx].y;
+        }
+        cluster_mean /= indices.indices.size();
+    
+        // Step 4: Fit a circle to the cluster
         Eigen::Vector2f center(0.0f, 0.0f);
-        int total_points = left_indices.indices.size() + right_indices.indices.size();
+        float radius = 0.0f;
+        fitSingleCircleHelper(transformed_cloud, indices, center, radius);
     
-        for (int idx : left_indices.indices) {
-            center.x() += transformed_cloud->points[idx].x;
-            center.y() += transformed_cloud->points[idx].y;
-        }
-        for (int idx : right_indices.indices) {
-            center.x() += transformed_cloud->points[idx].x;
-            center.y() += transformed_cloud->points[idx].y;
-        }
-        center /= total_points;
+        // Step 5: Determine the track direction based on curvature
+        float curvature = 1.0f / radius;  // Curvature is 1/r
+        Eigen::Vector2f track_direction;
     
-        // Step 4: Compute initial radii as the average distance to the center
-        float left_radius = 0.0f;
-        for (int idx : left_indices.indices) {
-            Eigen::Vector2f p(transformed_cloud->points[idx].x, transformed_cloud->points[idx].y);
-            left_radius += (p - center).norm();
-        }
-        left_radius /= left_indices.indices.size();
-    
-        float right_radius = 0.0f;
-        for (int idx : right_indices.indices) {
-            Eigen::Vector2f p(transformed_cloud->points[idx].x, transformed_cloud->points[idx].y);
-            right_radius += (p - center).norm();
-        }
-        right_radius /= right_indices.indices.size();
-    
-        // Step 5: Determine the orientation of the clusters based on the camera's view
-        // Compute the mean x-coordinate of each cluster in the transformed frame
-        float left_mean_x = 0.0f;
-        for (int idx : left_indices.indices) {
-            left_mean_x += transformed_cloud->points[idx].x;
-        }
-        left_mean_x /= left_indices.indices.size();
-    
-        float right_mean_x = 0.0f;
-        for (int idx : right_indices.indices) {
-            right_mean_x += transformed_cloud->points[idx].x;
-        }
-        right_mean_x /= right_indices.indices.size();
-    
-        // Determine if the center should be to the left or right of both clusters
-        bool center_on_left = (left_mean_x < right_mean_x);
-    
-        // Step 6: Set up the Ceres problem
-        double ceres_center[2] = {center.x(), center.y()};
-        double ceres_left_radius = left_radius;
-        double ceres_right_radius = right_radius;
-    
-        ceres::Problem problem;
-    
-        // Add residuals for the left cluster
-        for (int idx : left_indices.indices) {
-            double x = transformed_cloud->points[idx].x;
-            double y = transformed_cloud->points[idx].y;
-            ceres::CostFunction* cost_function =
-                new ceres::AutoDiffCostFunction<CircleFittingCost, 1, 2, 1>(new CircleFittingCost(x, y));
-            problem.AddResidualBlock(cost_function, nullptr, ceres_center, &ceres_left_radius);
-        }
-    
-        // Add residuals for the right cluster
-        for (int idx : right_indices.indices) {
-            double x = transformed_cloud->points[idx].x;
-            double y = transformed_cloud->points[idx].y;
-            ceres::CostFunction* cost_function =
-                new ceres::AutoDiffCostFunction<CircleFittingCost, 1, 2, 1>(new CircleFittingCost(x, y));
-            problem.AddResidualBlock(cost_function, nullptr, ceres_center, &ceres_right_radius);
-        }
-    
-        // Step 7: Add a soft constraint to enforce the orientation
-        if (center_on_left) {
-            // Center should be to the left of both clusters
-            for (int idx : left_indices.indices) {
-                double x = transformed_cloud->points[idx].x;
-                ceres::CostFunction* constraint =
-                    new ceres::AutoDiffCostFunction<OrientationConstraint, 1, 2>(
-                        new OrientationConstraint(x, true));  // Center should be <= x
-                problem.AddResidualBlock(constraint, nullptr, ceres_center);
-            }
-            for (int idx : right_indices.indices) {
-                double x = transformed_cloud->points[idx].x;
-                ceres::CostFunction* constraint =
-                    new ceres::AutoDiffCostFunction<OrientationConstraint, 1, 2>(
-                        new OrientationConstraint(x, true));  // Center should be <= x
-                problem.AddResidualBlock(constraint, nullptr, ceres_center);
-            }
+        if (curvature > 0) {
+            // Cluster curves to the left: track direction points to the right
+            track_direction = Eigen::Vector2f(1.0f, 0.0f);
         } else {
-            // Center should be to the right of both clusters
-            for (int idx : left_indices.indices) {
-                double x = transformed_cloud->points[idx].x;
-                ceres::CostFunction* constraint =
-                    new ceres::AutoDiffCostFunction<OrientationConstraint, 1, 2>(
-                        new OrientationConstraint(x, false));  // Center should be >= x
-                problem.AddResidualBlock(constraint, nullptr, ceres_center);
-            }
-            for (int idx : right_indices.indices) {
-                double x = transformed_cloud->points[idx].x;
-                ceres::CostFunction* constraint =
-                    new ceres::AutoDiffCostFunction<OrientationConstraint, 1, 2>(
-                        new OrientationConstraint(x, false));  // Center should be >= x
-                problem.AddResidualBlock(constraint, nullptr, ceres_center);
-            }
+            // Cluster curves to the right: track direction points to the left
+            track_direction = Eigen::Vector2f(-1.0f, 0.0f);
         }
     
-        // Step 8: Solve the problem
-        ceres::Solver::Options options;
-        options.minimizer_progress_to_stdout = false;  // Enable logging
-        options.max_num_iterations = 100;             // Increase the number of iterations
-        options.function_tolerance = 1e-6;           // Set a tighter tolerance
-        ceres::Solver::Summary summary;
-        ceres::Solve(options, &problem, &summary);
+        // Step 6: Compute the perpendicular direction
+        Eigen::Vector2f perpendicular_direction(-track_direction.y(), track_direction.x());
+    
+        // Step 7: Apply a larger initial offset in the perpendicular direction
+        float lane_width = 1.5f;  // Known lane width in meters
+        Eigen::Vector2f initial_offset = lane_width * perpendicular_direction;
+    
+        // Step 8: Iteratively adjust the center starting from the initial offset
+        float min_cost = std::numeric_limits<float>::max();
+        Eigen::Vector2f best_candidate_center = center + initial_offset;
+        float best_candidate_radius = radius;
+    
+        float step_size = 0.1f;  // Step size for adjusting the center
+        int num_steps = 20;      // Number of steps to try in the opposite direction
+    
+        for (int i = 0; i <= num_steps; ++i) {
+            // Move the center in the opposite direction of the track
+            Eigen::Vector2f candidate_center = center + initial_offset - i * step_size * perpendicular_direction;
+    
+            // Compute the radius for the candidate center
+            float candidate_radius = 0.0f;
+            for (int idx : indices.indices) {
+                Eigen::Vector2f p(transformed_cloud->points[idx].x, transformed_cloud->points[idx].y);
+                candidate_radius += (p - candidate_center).norm();
+            }
+            candidate_radius /= indices.indices.size();
+    
+            // Evaluate the fit of the circle
+            float cost = evaluateFit(transformed_cloud, indices, candidate_center, candidate_radius);
+    
+            // Update the best candidate if this one is better
+            if (cost < min_cost) {
+                min_cost = cost;
+                best_candidate_center = candidate_center;
+                best_candidate_radius = candidate_radius;
+            }
+        }
     
         // Step 9: Update the output variables
-        best_center = Eigen::Vector2f(ceres_center[0], ceres_center[1]);
-        best_left_radius = ceres_left_radius;
-        best_right_radius = ceres_right_radius;
+        best_center = best_candidate_center;
+        best_radius = best_candidate_radius;
     
         // Print the results
         std::cout << "Optimized Center: (" << best_center.x() << ", " << best_center.y() << ")\n";
-        std::cout << "Optimized Left Radius: " << best_left_radius << "\n";
-        std::cout << "Optimized Right Radius: " << best_right_radius << "\n";
+        std::cout << "Optimized Radius: " << best_radius << "\n";
     
         return true;
     }
-    
-    // Orientation constraint cost function
-    struct OrientationConstraint {
-        OrientationConstraint(double x, bool is_left) : x_(x), is_left_(is_left) {}
-    
-        template <typename T>
-        bool operator()(const T* const center, T* residual) const {
-            if (is_left_) {
-                // Center should be <= x
-                residual[0] = std::max(T(0.0), center[0] - T(x_));  // Use std::max
-            } else {
-                // Center should be >= x
-                residual[0] = std::max(T(0.0), T(x_) - center[0]);  // Use std::max
-            }
-            return true;
+
+    void fitSingleCircleHelper(
+        const pcl::PointCloud<pcl::PointXYZ>::Ptr &cloud, 
+        const pcl::PointIndices &indices,
+        Eigen::Vector2f &center, 
+        float &radius)
+    {
+        // Compute the centroid of the cluster
+        center = Eigen::Vector2f(0.0f, 0.0f);
+        for (int idx : indices.indices) {
+            center.x() += cloud->points[idx].x;
+            center.y() += cloud->points[idx].y;
         }
+        center /= indices.indices.size();
     
-    private:
-        double x_;
-        bool is_left_;
-    };
-        
-    
-
-    
-
+        // Compute the radius as the average distance to the center
+        radius = 0.0f;
+        for (int idx : indices.indices) {
+            Eigen::Vector2f p(cloud->points[idx].x, cloud->points[idx].y);
+            radius += (p - center).norm();
+        }
+        radius /= indices.indices.size();
+    }
 
 
     void visualizeCircles(const Eigen::Vector2f &center, float left_radius, float right_radius, 
