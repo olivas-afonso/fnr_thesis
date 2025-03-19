@@ -17,6 +17,8 @@ find_package(visualization_msgs REQUIRED)
 find_package(tf2 REQUIRED)
 find_package(tf2_ros REQUIRED)
 find_package(tf2_sensor_msgs REQUIRED)
+set(Ceres_DIR "/usr/lib/cmake/Ceres")
+find_package(Ceres REQUIRED)
 
 
 
@@ -178,13 +180,14 @@ ament_target_dependencies(same_center
   tf2
   tf2_ros
   tf2_sensor_msgs
-  
+
 )
 
 target_link_libraries(same_center
     ${OpenCV_LIBS}
     tf2::tf2
     tf2_ros::tf2_ros
+    Ceres::ceres
       # Ensure this is linked correctly
 )
 

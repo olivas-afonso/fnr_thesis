@@ -23,12 +23,15 @@
 
 #include <pcl/common/common.h>
 #include <pcl/common/pca.h>
+#include <tf2_geometry_msgs/tf2_geometry_msgs.h>  // For tf2::Quaternion and tf2::Matrix3x3
+
 
 
 
 #include <vector>
 #include <cmath>
 #include <numeric>
+#include <ceres/ceres.h>
 
 
 
@@ -213,7 +216,7 @@ private:
 
         if (left_detected && right_detected)
         {
-            fitCircles(white_cloud, leftmost_cluster, rightmost_cluster, center, left_radius, right_radius);
+            fitCircles(white_cloud, leftmost_cluster, rightmost_cluster, current_pose_.pose, center, left_radius, right_radius);
 
             Z << center[0], center[1], left_radius, right_radius;
 
@@ -244,7 +247,7 @@ private:
             }
         
             // Now fit circles as usual
-            fitCircles(white_cloud, leftmost_cluster, estimated_right_indices, center, left_radius, right_radius);
+            fitCircles(white_cloud, leftmost_cluster, estimated_right_indices,current_pose_.pose, center, left_radius, right_radius);
         
             Z << center[0], center[1], left_radius, right_radius;
         }
@@ -274,7 +277,7 @@ private:
             }
             testClusterMarkers(white_cloud, estimated_left_indices, rightmost_cluster);
             // Now fit circles as usual
-            fitCircles(white_cloud, estimated_left_indices, rightmost_cluster, center, left_radius, right_radius);
+            fitCircles(white_cloud, estimated_left_indices, rightmost_cluster,current_pose_.pose, center, left_radius, right_radius);
 
             Z << center[0], center[1], left_radius, right_radius;
         }
@@ -308,128 +311,212 @@ private:
 
 
 
-    bool fitSingleCircle(const pcl::PointCloud<pcl::PointXYZ>::Ptr &cloud, const pcl::PointIndices &indices, Eigen::Vector2f &center, float &radius)
+    struct CircleFittingCost {
+        CircleFittingCost(double x, double y) : x_(x), y_(y) {}
+    
+        template <typename T>
+        bool operator()(const T* const center, const T* const radius, T* residual) const {
+            T dx = T(x_) - center[0];
+            T dy = T(y_) - center[1];
+            residual[0] = ceres::sqrt(dx * dx + dy * dy) - radius[0];
+            return true;
+        }
+    
+    private:
+        double x_, y_;
+    };
+    
+    bool fitCircles(
+        const pcl::PointCloud<pcl::PointXYZ>::Ptr &cloud, 
+        const pcl::PointIndices &left_indices, 
+        const pcl::PointIndices &right_indices,
+        const geometry_msgs::msg::Pose &current_pose_,
+        Eigen::Vector2f &best_center, 
+        float &best_left_radius, 
+        float &best_right_radius)
     {
-        if (indices.indices.size() < 3)
+        if (left_indices.indices.size() < 3 || right_indices.indices.size() < 3) {
+            std::cerr << "Error: Not enough points in one or both clusters!\n";
             return false;
-
-        float sum_x = 0, sum_y = 0, sum_x2 = 0, sum_y2 = 0, sum_xy = 0;
-        float sum_x3 = 0, sum_y3 = 0, sum_x2y = 0, sum_xy2 = 0;
-        int N = indices.indices.size();
-
-        for (int idx : indices.indices)
-        {
-            float x = cloud->points[idx].x;
-            float y = cloud->points[idx].y;
-            float x2 = x * x, y2 = y * y;
-
-            sum_x += x;
-            sum_y += y;
-            sum_x2 += x2;
-            sum_y2 += y2;
-            sum_xy += x * y;
-            sum_x3 += x2 * x;
-            sum_y3 += y2 * y;
-            sum_x2y += x2 * y;
-            sum_xy2 += x * y2;
         }
-
-        Eigen::Matrix3f A;
-        Eigen::Vector3f B;
-
-        A << sum_x2, sum_xy, sum_x,
-        sum_xy, sum_y2, sum_y,
-        sum_x,  sum_y,  N;
-
-        B << (sum_x3 + sum_xy2) / 2,
-        (sum_y3 + sum_x2y) / 2,
-        (sum_x2 + sum_y2) / 2;
-
-        Eigen::Vector3f solution = A.colPivHouseholderQr().solve(B);
-        center = solution.head<2>();
-
-        radius = 0;
-        for (int idx : indices.indices)
-        {
-            Eigen::Vector2f p(cloud->points[idx].x, cloud->points[idx].y);
-            radius += (p - center).norm();
+    
+        // Step 1: Extract camera position and orientation
+        Eigen::Vector3f camera_position(
+            current_pose_.position.x,
+            current_pose_.position.y,
+            current_pose_.position.z);
+    
+        tf2::Quaternion q(
+            current_pose_.orientation.x,
+            current_pose_.orientation.y,
+            current_pose_.orientation.z,
+            current_pose_.orientation.w);
+        tf2::Matrix3x3 rotation_matrix(q);
+    
+        // Convert tf2::Matrix3x3 to Eigen::Matrix3f
+        Eigen::Matrix3f rotation_matrix_eigen;
+        for (int i = 0; i < 3; ++i) {
+            for (int j = 0; j < 3; ++j) {
+                rotation_matrix_eigen(i, j) = rotation_matrix[i][j];
+            }
         }
-        radius /= N;
-
+    
+        // Step 2: Transform the point cloud into the camera's reference frame
+        pcl::PointCloud<pcl::PointXYZ>::Ptr transformed_cloud(new pcl::PointCloud<pcl::PointXYZ>);
+        for (const auto &point : *cloud) {
+            Eigen::Vector3f point_in_world(point.x, point.y, point.z);
+            Eigen::Vector3f point_in_camera = rotation_matrix_eigen * (point_in_world - camera_position);
+            transformed_cloud->push_back(pcl::PointXYZ(point_in_camera.x(), point_in_camera.y(), point_in_camera.z()));
+        }
+    
+        // Step 3: Compute the initial center as the centroid of all points in the transformed cloud
+        Eigen::Vector2f center(0.0f, 0.0f);
+        int total_points = left_indices.indices.size() + right_indices.indices.size();
+    
+        for (int idx : left_indices.indices) {
+            center.x() += transformed_cloud->points[idx].x;
+            center.y() += transformed_cloud->points[idx].y;
+        }
+        for (int idx : right_indices.indices) {
+            center.x() += transformed_cloud->points[idx].x;
+            center.y() += transformed_cloud->points[idx].y;
+        }
+        center /= total_points;
+    
+        // Step 4: Compute initial radii as the average distance to the center
+        float left_radius = 0.0f;
+        for (int idx : left_indices.indices) {
+            Eigen::Vector2f p(transformed_cloud->points[idx].x, transformed_cloud->points[idx].y);
+            left_radius += (p - center).norm();
+        }
+        left_radius /= left_indices.indices.size();
+    
+        float right_radius = 0.0f;
+        for (int idx : right_indices.indices) {
+            Eigen::Vector2f p(transformed_cloud->points[idx].x, transformed_cloud->points[idx].y);
+            right_radius += (p - center).norm();
+        }
+        right_radius /= right_indices.indices.size();
+    
+        // Step 5: Determine the orientation of the clusters based on the camera's view
+        // Compute the mean x-coordinate of each cluster in the transformed frame
+        float left_mean_x = 0.0f;
+        for (int idx : left_indices.indices) {
+            left_mean_x += transformed_cloud->points[idx].x;
+        }
+        left_mean_x /= left_indices.indices.size();
+    
+        float right_mean_x = 0.0f;
+        for (int idx : right_indices.indices) {
+            right_mean_x += transformed_cloud->points[idx].x;
+        }
+        right_mean_x /= right_indices.indices.size();
+    
+        // Determine if the center should be to the left or right of both clusters
+        bool center_on_left = (left_mean_x < right_mean_x);
+    
+        // Step 6: Set up the Ceres problem
+        double ceres_center[2] = {center.x(), center.y()};
+        double ceres_left_radius = left_radius;
+        double ceres_right_radius = right_radius;
+    
+        ceres::Problem problem;
+    
+        // Add residuals for the left cluster
+        for (int idx : left_indices.indices) {
+            double x = transformed_cloud->points[idx].x;
+            double y = transformed_cloud->points[idx].y;
+            ceres::CostFunction* cost_function =
+                new ceres::AutoDiffCostFunction<CircleFittingCost, 1, 2, 1>(new CircleFittingCost(x, y));
+            problem.AddResidualBlock(cost_function, nullptr, ceres_center, &ceres_left_radius);
+        }
+    
+        // Add residuals for the right cluster
+        for (int idx : right_indices.indices) {
+            double x = transformed_cloud->points[idx].x;
+            double y = transformed_cloud->points[idx].y;
+            ceres::CostFunction* cost_function =
+                new ceres::AutoDiffCostFunction<CircleFittingCost, 1, 2, 1>(new CircleFittingCost(x, y));
+            problem.AddResidualBlock(cost_function, nullptr, ceres_center, &ceres_right_radius);
+        }
+    
+        // Step 7: Add a soft constraint to enforce the orientation
+        if (center_on_left) {
+            // Center should be to the left of both clusters
+            for (int idx : left_indices.indices) {
+                double x = transformed_cloud->points[idx].x;
+                ceres::CostFunction* constraint =
+                    new ceres::AutoDiffCostFunction<OrientationConstraint, 1, 2>(
+                        new OrientationConstraint(x, true));  // Center should be <= x
+                problem.AddResidualBlock(constraint, nullptr, ceres_center);
+            }
+            for (int idx : right_indices.indices) {
+                double x = transformed_cloud->points[idx].x;
+                ceres::CostFunction* constraint =
+                    new ceres::AutoDiffCostFunction<OrientationConstraint, 1, 2>(
+                        new OrientationConstraint(x, true));  // Center should be <= x
+                problem.AddResidualBlock(constraint, nullptr, ceres_center);
+            }
+        } else {
+            // Center should be to the right of both clusters
+            for (int idx : left_indices.indices) {
+                double x = transformed_cloud->points[idx].x;
+                ceres::CostFunction* constraint =
+                    new ceres::AutoDiffCostFunction<OrientationConstraint, 1, 2>(
+                        new OrientationConstraint(x, false));  // Center should be >= x
+                problem.AddResidualBlock(constraint, nullptr, ceres_center);
+            }
+            for (int idx : right_indices.indices) {
+                double x = transformed_cloud->points[idx].x;
+                ceres::CostFunction* constraint =
+                    new ceres::AutoDiffCostFunction<OrientationConstraint, 1, 2>(
+                        new OrientationConstraint(x, false));  // Center should be >= x
+                problem.AddResidualBlock(constraint, nullptr, ceres_center);
+            }
+        }
+    
+        // Step 8: Solve the problem
+        ceres::Solver::Options options;
+        options.minimizer_progress_to_stdout = false;  // Enable logging
+        options.max_num_iterations = 100;             // Increase the number of iterations
+        options.function_tolerance = 1e-6;           // Set a tighter tolerance
+        ceres::Solver::Summary summary;
+        ceres::Solve(options, &problem, &summary);
+    
+        // Step 9: Update the output variables
+        best_center = Eigen::Vector2f(ceres_center[0], ceres_center[1]);
+        best_left_radius = ceres_left_radius;
+        best_right_radius = ceres_right_radius;
+    
+        // Print the results
+        std::cout << "Optimized Center: (" << best_center.x() << ", " << best_center.y() << ")\n";
+        std::cout << "Optimized Left Radius: " << best_left_radius << "\n";
+        std::cout << "Optimized Right Radius: " << best_right_radius << "\n";
+    
         return true;
     }
-
-        // Function to compute radius given a fixed center
-    float computeRadius(const pcl::PointCloud<pcl::PointXYZ>::Ptr &cloud, const pcl::PointIndices &indices, const Eigen::Vector2f &fixed_center)
-    {
-        float radius = 0;
-        for (int idx : indices.indices)
-        {
-            Eigen::Vector2f p(cloud->points[idx].x, cloud->points[idx].y);
-            radius += (p - fixed_center).norm();
+    
+    // Orientation constraint cost function
+    struct OrientationConstraint {
+        OrientationConstraint(double x, bool is_left) : x_(x), is_left_(is_left) {}
+    
+        template <typename T>
+        bool operator()(const T* const center, T* residual) const {
+            if (is_left_) {
+                // Center should be <= x
+                residual[0] = std::max(T(0.0), center[0] - T(x_));  // Use std::max
+            } else {
+                // Center should be >= x
+                residual[0] = std::max(T(0.0), T(x_) - center[0]);  // Use std::max
+            }
+            return true;
         }
-        return radius / indices.indices.size();
-    }
-
-        // Function to fit both circles using the new strategy
-    bool fitCircles(const pcl::PointCloud<pcl::PointXYZ>::Ptr &cloud, const pcl::PointIndices &left_indices, const pcl::PointIndices &right_indices,
-        Eigen::Vector2f &best_center, float &best_left_radius, float &best_right_radius)
-    {
-        if (left_indices.indices.size() < 3 || right_indices.indices.size() < 3)
-        return false;
-
-        Eigen::Vector2f center_left, center_right;
-        float radius_left, radius_right;
-
-        // Fit left cluster independently
-        fitSingleCircle(cloud, left_indices, center_left, radius_left);
-        // Fit right cluster independently
-        fitSingleCircle(cloud, right_indices, center_right, radius_right);
-
-        // Compute radii with forced centers
-        float radius_right_forced = computeRadius(cloud, right_indices, center_left);
-        float radius_left_forced = computeRadius(cloud, left_indices, center_right);
-
-        // Compute total fitting error for both solutions
-        float error_left_forced = 0, error_right_forced = 0;
-        for (int idx : left_indices.indices)
-        {
-            Eigen::Vector2f p(cloud->points[idx].x, cloud->points[idx].y);
-            error_left_forced += std::abs((p - center_right).norm() - radius_left_forced);
-        }
-        for (int idx : right_indices.indices)
-        {
-            Eigen::Vector2f p(cloud->points[idx].x, cloud->points[idx].y);
-            error_left_forced += std::abs((p - center_right).norm() - radius_right);
-        }
-
-        for (int idx : left_indices.indices)
-        {
-            Eigen::Vector2f p(cloud->points[idx].x, cloud->points[idx].y);
-            error_right_forced += std::abs((p - center_left).norm() - radius_left);
-        }
-        for (int idx : right_indices.indices)
-        {
-            Eigen::Vector2f p(cloud->points[idx].x, cloud->points[idx].y);
-            error_right_forced += std::abs((p - center_left).norm() - radius_right_forced);
-        }
-
-        // Choose the best solution based on total error
-        if (error_left_forced < error_right_forced)
-        {
-            best_center = center_right;
-            best_left_radius = radius_left_forced;
-            best_right_radius = radius_right;
-        }
-        else
-            {
-            best_center = center_left;
-            best_left_radius = radius_left;
-            best_right_radius = radius_right_forced;
-        }
-
-        return true;
-    }
+    
+    private:
+        double x_;
+        bool is_left_;
+    };
+        
     
 
     
