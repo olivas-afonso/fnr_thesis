@@ -205,7 +205,7 @@ private:
         // Fit circles to left and right lane markings
         Eigen::Vector2f center;
         float left_radius, right_radius;
-
+        this->get_parameter("fit_side", fit_side_);
         //fitCircle(white_cloud, leftmost_cluster, left_circle);
         //RCLCPP_INFO(this->get_logger(), "Circle 1: x=%f, y=%f, r=%f", left_circle[0], left_circle[1], left_circle[2]);
 
@@ -214,7 +214,8 @@ private:
         
         Eigen::VectorXf Z(4); // Ensure correct size
         left_detected=true;
-        right_detected=false;
+        right_detected=true;
+        /*
         if (left_detected && right_detected) {
             // Both clusters detected: fit circles as usual
             fitCircles(white_cloud, leftmost_cluster, rightmost_cluster, current_pose_.pose, center, left_radius, right_radius);
@@ -234,12 +235,48 @@ private:
             fitSingleCircle(white_cloud, rightmost_cluster, current_pose_.pose, center, right_radius);
         
             // Derive the left cluster based on the known lane width
-            float lane_width = 1.5f;  // Known lane width in meters
-            Eigen::Vector2f left_center = center - lane_width * Eigen::Vector2f(1.0f, 0.0f);  // Shift to the left
-            float left_radius = right_radius;  // Assume the same radius for simplicity
+            float lane_width = 1.4f;  // Known lane width in meters
+            Eigen::Vector2f left_center = center;  // Shift to the left
+            float left_radius = right_radius - lane_width;  // Assume the same radius for simplicity
         
             Z << center[0], center[1], left_radius, right_radius;
         }
+        else
+        {
+            return;
+        }
+            */
+
+        if (fit_side_) {
+            // Both clusters detected: fit circles as usual
+            fitCircles(white_cloud, leftmost_cluster, rightmost_cluster, current_pose_.pose, center, left_radius, right_radius);
+            Z << center[0], center[1], left_radius, right_radius;
+        
+        } else if (!fit_side_) {
+            // Only left cluster detected: fit a single circle to the left cluster
+            fitSingleCircle(white_cloud, leftmost_cluster, current_pose_.pose, center, left_radius);
+        
+            // Derive the right cluster based on the known lane width
+            float lane_width = 1.35f;  // Known lane width in meters
+            Eigen::Vector2f right_center = center; 
+            float right_radius = left_radius + lane_width;  // Assume the same radius for simplicity
+            
+            Z << center[0], center[1], left_radius, right_radius;
+        }
+            
+        /*
+        } else if (!fit_side_) {
+            // Only right cluster detected: fit a single circle to the right cluster
+            fitSingleCircle(white_cloud, rightmost_cluster, current_pose_.pose, center, right_radius);
+        
+            // Derive the left cluster based on the known lane width
+            float lane_width = 1.35f;  // Known lane width in meters
+            Eigen::Vector2f left_center = center;  // Shift to the left
+            float left_radius = right_radius - lane_width;  // Assume the same radius for simplicity
+        
+            Z << center[0], center[1], left_radius, right_radius;
+        }
+        */
         else
         {
             return;
@@ -258,13 +295,31 @@ private:
 
         Eigen::Vector2f common_center = Z.head<2>(); 
         //(float left_start_angle, left_end_angle, right_start_angle, right_end_angle;
-        if(right_detected) computeArcAngles(white_cloud, rightmost_cluster, common_center, right_start_angle, right_end_angle);
-        if(left_detected) computeArcAngles(white_cloud, leftmost_cluster, common_center, left_start_angle, left_end_angle);
+        if(fit_side_) 
+        {
+            computeArcAngles(white_cloud, rightmost_cluster, common_center, right_start_angle, right_end_angle);
+            computeArcAngles(white_cloud, leftmost_cluster, common_center, left_start_angle, left_end_angle);
+        }
+        else if(!fit_side_) computeArcAngles(white_cloud, leftmost_cluster, common_center, left_start_angle, left_end_angle);
+        //if(!fit_side_) computeArcAngles(white_cloud, rightmost_cluster, common_center, right_start_angle, right_end_angle);
+
         //computeArcAngles(white_cloud, leftmost_cluster, left_circle, left_start_angle, left_end_angle);
         //computeArcAngles(white_cloud, rightmost_cluster, right_circle, right_start_angle, right_end_angle);
-
-        //visualizeCircles(common_center, left_radius, right_radius, state, left_start_angle, left_end_angle, right_start_angle, right_end_angle, left_detected, right_detected);
-        visualizeCircles(common_center, left_radius, right_radius, state, left_start_angle, left_end_angle, left_start_angle, left_end_angle, left_detected, left_detected);
+        
+        //std::cout << "left start angle: " << left_start_angle << "\n";
+        //std::cout << "right start angle: " << right_start_angle << "\n";
+        if(fit_side_){
+            left_detected=true;
+            right_detected=true;
+        }
+        else if (!fit_side_)
+        {
+            left_detected=true;
+            right_detected=false;
+        }
+        visualizeCircles(common_center, left_radius, right_radius, state, left_start_angle, left_end_angle, right_start_angle, right_end_angle, left_detected, right_detected);
+        //visualizeCircles(common_center, left_radius, right_radius, state, left_start_angle, left_end_angle, left_start_angle, left_end_angle, left_detected, left_detected);
+        //visualizeCircles(common_center, left_radius, right_radius, state, right_start_angle, right_end_angle, right_start_angle, right_end_angle, right_detected, right_detected);
 
     }
 
@@ -408,9 +463,9 @@ private:
         best_right_radius = best_candidate_right_radius;
 
         // Print the results
-        std::cout << "Optimized Center: (" << best_center.x() << ", " << best_center.y() << ")\n";
-        std::cout << "Optimized Left Radius: " << best_left_radius << "\n";
-        std::cout << "Optimized Right Radius: " << best_right_radius << "\n";
+        //std::cout << "Optimized Center: (" << best_center.x() << ", " << best_center.y() << ")\n";
+        //std::cout << "Optimized Left Radius: " << best_left_radius << "\n";
+        //std::cout << "Optimized Right Radius: " << best_right_radius << "\n";
 
         return true;
     }
@@ -490,7 +545,7 @@ private:
         Eigen::Vector2f perpendicular_direction(-track_direction.y(), track_direction.x());
     
         // Step 7: Apply a larger initial offset in the perpendicular direction
-        float lane_width = 1.5f;  // Known lane width in meters
+        float lane_width = 3.0;  // Known lane width in meters
         Eigen::Vector2f initial_offset = lane_width * perpendicular_direction;
     
         // Step 8: Iteratively adjust the center starting from the initial offset
