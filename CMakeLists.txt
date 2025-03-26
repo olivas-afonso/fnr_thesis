@@ -17,9 +17,21 @@ find_package(visualization_msgs REQUIRED)
 find_package(tf2 REQUIRED)
 find_package(tf2_ros REQUIRED)
 find_package(tf2_sensor_msgs REQUIRED)
-set(Ceres_DIR "/usr/lib/cmake/Ceres")
-find_package(Ceres REQUIRED)
+find_package(OpenCV REQUIRED)
+find_package(GSL REQUIRED)
 
+
+find_package(PCL REQUIRED COMPONENTS common io surface)
+
+include_directories(
+  ${PCL_INCLUDE_DIRS}
+  /usr/include/pcl-1.12
+  )
+link_directories(
+  ${PCL_LIBRARY_DIRS}
+  ${OpenCV_INCLUDE_DIRS}
+)
+add_definitions(${PCL_DEFINITIONS})
 
 
 
@@ -187,9 +199,78 @@ target_link_libraries(same_center
     ${OpenCV_LIBS}
     tf2::tf2
     tf2_ros::tf2_ros
-    Ceres::ceres
+
       # Ensure this is linked correctly
 )
+
+add_executable(skeleton_spline src/skeleton_spline.cpp)
+
+ament_target_dependencies(skeleton_spline
+  rclcpp
+  std_msgs
+  sensor_msgs
+  pcl_ros
+  pcl_conversions
+  visualization_msgs
+  tf2
+  tf2_ros
+  tf2_sensor_msgs
+  
+)
+
+target_link_libraries(skeleton_spline
+    ${OpenCV_LIBS}
+    tf2::tf2
+    tf2_ros::tf2_ros
+    ${PCL_LIBRARIES}
+)
+
+
+add_executable(spline_only src/spline_only.cpp)
+
+ament_target_dependencies(spline_only
+  rclcpp
+  std_msgs
+  sensor_msgs
+  pcl_ros
+  pcl_conversions
+  visualization_msgs
+  tf2
+  tf2_ros
+  tf2_sensor_msgs
+  
+)
+
+target_link_libraries(spline_only
+    ${OpenCV_LIBS}
+    tf2::tf2
+    tf2_ros::tf2_ros
+    ${PCL_LIBRARIES}
+)
+
+add_executable(kalman_spline src/kalman_spline.cpp)
+
+ament_target_dependencies(kalman_spline
+  rclcpp
+  std_msgs
+  sensor_msgs
+  pcl_ros
+  pcl_conversions
+  visualization_msgs
+  tf2
+  tf2_ros
+  tf2_sensor_msgs
+  
+)
+
+target_link_libraries(kalman_spline
+    ${OpenCV_LIBS}
+    tf2::tf2
+    tf2_ros::tf2_ros
+    ${PCL_LIBRARIES}
+)
+
+
 
 
 
@@ -204,6 +285,9 @@ install(TARGETS
   circle_kalman
   test_cluster
   same_center
+  skeleton_spline
+  spline_only
+  kalman_spline
   DESTINATION lib/${PROJECT_NAME}
 )
 

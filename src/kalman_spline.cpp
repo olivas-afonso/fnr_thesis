@@ -51,7 +51,9 @@ public:
         white_publisher_ = this->create_publisher<sensor_msgs::msg::PointCloud2>("/white_only", 10);
         marker_pub_ = this->create_publisher<visualization_msgs::msg::MarkerArray>("camera_axes", 10);
     
-        curve_publisher_ = this->create_publisher<visualization_msgs::msg::MarkerArray>("line_fit_original", 10);
+        curve_publisher_right_ = this->create_publisher<visualization_msgs::msg::MarkerArray>("right_spline_fit_original", 10);
+        curve_publisher_left_ = this->create_publisher<visualization_msgs::msg::MarkerArray>("left_spline_fit_original", 10);
+        kalman_publisher_ = this->create_publisher<visualization_msgs::msg::MarkerArray>("kalman_state", 10);
         cluster_marker_pub_ = this->create_publisher<visualization_msgs::msg::MarkerArray>("clusters", 10);
         test_cluster_marker_pub_ = this->create_publisher<visualization_msgs::msg::MarkerArray>("test_clusters", 10);
 
@@ -60,29 +62,64 @@ public:
         this->get_parameter("fit_side", fit_side_);
 
         // Initialize state [x_c, y_c, r, theta]
-        state = Eigen::VectorXf::Zero(4);
-        state << 0, 0, 3.0, 3.0; // Assume initial curve with 5m radius
+        state = Eigen::VectorXf::Zero(12);
+        state << 0.01, 0.0, 0.0, 0.0, 0.0, 0.0,   // Left lane (slight initial curvature)
+         0.01, 0.0, 1.4, 0.0, 0.0, 0.0;  // Right lane (1.4m offset)
+
 
         // Initialize covariance matrix
-        P = Eigen::MatrixXf::Identity(4,4) * 0.1;
+        P = Eigen::MatrixXf::Identity(12,12) * 0.1;
 
-        // Process and measurement noise
-        Q = Eigen::MatrixXf::Identity(4,4) * 0.01;
-        R = Eigen::MatrixXf::Identity(4,4) * 0.5;
-        I = Eigen::MatrixXf::Identity(4,4);
 
-        // State transition model (assume slow-moving lane changes)
-        F = Eigen::MatrixXf::Identity(4,4);
+        // Process noise
+        Q = Eigen::MatrixXf::Identity(12,12) * 0.01;
+        // Higher uncertainty for derivative terms
+        Q.block(3,3,3,3) = Eigen::MatrixXf::Identity(3,3) * 0.1;  // Left derivatives
+        Q.block(9,9,3,3) = Eigen::MatrixXf::Identity(3,3) * 0.1;  // Right derivatives
+        
+        //Measurement noise
+        R = Eigen::MatrixXf::Identity(6,6) * 0.05;  // For full observation case
+        I = Eigen::MatrixXf::Identity(12,12);
+
+        // State transition model with coupling between lanes
+        F = Eigen::MatrixXf::Identity(12,12);
+        float dt = 0.1; // Time step
+        // Left lane dynamics
+        F(0,3) = dt; F(1,4) = dt; F(2,5) = dt;
+        // Right lane dynamics
+        F(6,9) = dt; F(7,10) = dt; F(8,11) = dt;
+        // Coupling terms (left-right influence)
+        F.block(0,6,3,3) = 0.05 * Eigen::Matrix3f::Identity();
+        F.block(6,0,3,3) = 0.05 * Eigen::Matrix3f::Identity();
+
+
+        // Measurement matrix - can observe up to 6 values (both lanes)
+        H_full = Eigen::MatrixXf::Zero(6,12);
+        H_full.block(0,0,3,3) = Eigen::Matrix3f::Identity();  // Left coeffs
+        H_full.block(3,6,3,3) = Eigen::Matrix3f::Identity();  // Right coeffs
+        
+        H_left_only = Eigen::MatrixXf::Zero(3,12);
+        H_left_only.block(0,0,3,3) = Eigen::Matrix3f::Identity();
+
+        H_right_only = Eigen::MatrixXf::Zero(3,12);
+        H_right_only.block(0,6,3,3) = Eigen::Matrix3f::Identity();
 
 
 
     }
 
 private:
+    /////////////////////////////////////
+    /*
+    State Vecotr Initialize 12D state vector [a_L, b_L, c_L, ȧ_L, ḃ_L, ċ_L, a_R, b_R, c_R, ȧ_R, ḃ_R, ċ_R]
+
+    */
+    
     Eigen::VectorXf state; // [x_c, y_c, r, theta]
-    Eigen::MatrixXf P, Q, R, I, F;
+    Eigen::MatrixXf P, Q, R, I, F, H, H_full, H_left_only, H_right_only;
     float left_start_angle = 0.0, left_end_angle = 0.0;
     float right_start_angle = 0.0, right_end_angle = 0.0;
+    Eigen::Vector3f lane_transform_;
 
 
     void poseCallback(const geometry_msgs::msg::PoseStamped::SharedPtr msg)
@@ -203,18 +240,12 @@ private:
         }
 
         // Fit circles to left and right lane markings
-        Eigen::Vector2f center;
-        float left_radius, right_radius;
         this->get_parameter("fit_side", fit_side_);
         //fitCircle(white_cloud, leftmost_cluster, left_circle);
         //RCLCPP_INFO(this->get_logger(), "Circle 1: x=%f, y=%f, r=%f", left_circle[0], left_circle[1], left_circle[2]);
 
         //fitCircle(white_cloud, rightmost_cluster, right_circle);
         //RCLCPP_INFO(this->get_logger(), "Circle 1: x=%f, y=%f, r=%f", right_circle[0], right_circle[1], right_circle[2]);
-        
-        Eigen::VectorXf Z(4); // Ensure correct size
-        left_detected=true;
-        right_detected=true;
         /*
         if (left_detected && right_detected) {
             // Both clusters detected: fit circles as usual
@@ -247,21 +278,73 @@ private:
         }
             */
 
-        if (fit_side_) {
-            // Both clusters detected: fit circles as usual
-            fitCircles(white_cloud, leftmost_cluster, rightmost_cluster, current_pose_.pose, center, left_radius, right_radius);
-            Z << center[0], center[1], left_radius, right_radius;
+        // Measurement Update Logic
+        Eigen::VectorXf Z;
+        Eigen::MatrixXf H;
+        Eigen::MatrixXf R_current;
+        Eigen::Vector3f coeffs_right, coeffs_left;
+
+         // Stores [Δa, Δb, Δc]
         
-        } else if (!fit_side_) {
-            // Only left cluster detected: fit a single circle to the left cluster
-            fitSingleCircle(white_cloud, leftmost_cluster, current_pose_.pose, center, left_radius);
-        
-            // Derive the right cluster based on the known lane width
-            float lane_width = 1.35f;  // Known lane width in meters
-            Eigen::Vector2f right_center = center; 
-            float right_radius = left_radius + lane_width;  // Assume the same radius for simplicity
+        if(!fit_side_)
+        {
+            left_detected=true;
+            right_detected=false;
+        }
+        if (left_detected && right_detected) {
             
-            Z << center[0], center[1], left_radius, right_radius;
+            
+
+            pcl::PointCloud<pcl::PointXYZ>::Ptr right_cluster(new pcl::PointCloud<pcl::PointXYZ>());
+            pcl::copyPointCloud(*white_cloud, rightmost_cluster, *right_cluster);
+            coeffs_right=fitQuadraticCurve(right_cluster, curve_publisher_right_);
+
+            pcl::PointCloud<pcl::PointXYZ>::Ptr left_cluster(new pcl::PointCloud<pcl::PointXYZ>());
+            pcl::copyPointCloud(*white_cloud, leftmost_cluster, *left_cluster);
+            coeffs_left=fitQuadraticCurve(left_cluster, curve_publisher_left_);
+
+            lane_transform_ = calculateAndStoreTransform(coeffs_left, coeffs_right);
+
+            Z.resize(6);
+
+            Z << coeffs_left(0), coeffs_left(1), coeffs_left(2),
+                coeffs_right(0), coeffs_right(1), coeffs_right(2);
+            H = H_full;
+            R_current = R;
+
+
+            // Both clusters detected: fit circles as usual
+            //fitCircles(white_cloud, leftmost_cluster, rightmost_cluster, current_pose_.pose, center, left_radius, right_radius);
+            //Z << center[0], center[1], left_radius, right_radius;
+        
+        } else if (left_detected) {
+            // Only left cluster detected: fit a single circle to the left cluster
+            pcl::PointCloud<pcl::PointXYZ>::Ptr left_cluster(new pcl::PointCloud<pcl::PointXYZ>());
+            pcl::copyPointCloud(*white_cloud, leftmost_cluster, *left_cluster);
+            Eigen::Vector3f coeffs_left = fitQuadraticCurve(left_cluster, curve_publisher_left_);
+            Eigen::Vector3f coeffs_right = estimateRightFromLeft(coeffs_left, lane_transform_);
+
+            Z.resize(6);
+            Z << coeffs_left(0), coeffs_left(1), coeffs_left(2),
+                coeffs_right(0), coeffs_right(1), coeffs_right(2);
+            H = H_full;
+            R_current = R;
+            R_current.block(3,3,3,3) *= 2.0; // Higher uncertainty for estimated right lane
+        }
+
+        else if (right_detected) {
+            // Only right lane visible - estimate left lane
+            pcl::PointCloud<pcl::PointXYZ>::Ptr right_cluster(new pcl::PointCloud<pcl::PointXYZ>());
+            pcl::copyPointCloud(*white_cloud, rightmost_cluster, *right_cluster);
+            Eigen::Vector3f coeffs_right = fitQuadraticCurve(right_cluster,curve_publisher_right_);
+            Eigen::Vector3f coeffs_left = estimateLeftFromRight(coeffs_right, lane_transform_);
+        
+            Z.resize(6);
+            Z << coeffs_left(0), coeffs_left(1), coeffs_left(2),
+                 coeffs_right(0), coeffs_right(1), coeffs_right(2);
+            H = H_full;
+            R_current = R;
+            R_current.block(0,0,3,3) *= 2.0; // Higher uncertainty for estimated left lane
         }
             
         /*
@@ -286,21 +369,26 @@ private:
         state = F * state;
         P = F * P * F.transpose() + Q;
 
+
         // Kalman Update Step
-        Eigen::MatrixXf S = P + R;
-        Eigen::MatrixXf K = P * S.inverse();
+        Eigen::MatrixXf S = H * P * H.transpose() + R_current;
+        Eigen::MatrixXf K = P * H.transpose() * S.inverse();
 
-        state = state + K * (Z - state);
-        P = (I - K) * P;
+        
+        state = state + K * (Z - H * state);
+        P = (I - K * H) * P;
 
-        Eigen::Vector2f common_center = Z.head<2>(); 
+        visualizeKalmanState(
+            state,               // Your 12D Kalman state vector
+            kalman_publisher_,    // Your marker publisher
+            left_detected,       // Boolean from detection
+            right_detected,      // Boolean from detection
+            -5.0f,               // Min x-range
+            10.0f,               // Max x-range
+            0.25f                // Point spacing
+        );
         //(float left_start_angle, left_end_angle, right_start_angle, right_end_angle;
-        if(fit_side_) 
-        {
-            computeArcAngles(white_cloud, rightmost_cluster, common_center, right_start_angle, right_end_angle);
-            computeArcAngles(white_cloud, leftmost_cluster, common_center, left_start_angle, left_end_angle);
-        }
-        else if(!fit_side_) computeArcAngles(white_cloud, leftmost_cluster, common_center, left_start_angle, left_end_angle);
+        
         //if(!fit_side_) computeArcAngles(white_cloud, rightmost_cluster, common_center, right_start_angle, right_end_angle);
 
         //computeArcAngles(white_cloud, leftmost_cluster, left_circle, left_start_angle, left_end_angle);
@@ -308,370 +396,245 @@ private:
         
         //std::cout << "left start angle: " << left_start_angle << "\n";
         //std::cout << "right start angle: " << right_start_angle << "\n";
-        if(fit_side_){
-            left_detected=true;
-            right_detected=true;
-        }
-        else if (!fit_side_)
-        {
-            left_detected=true;
-            right_detected=false;
-        }
-        visualizeCircles(common_center, left_radius, right_radius, state, left_start_angle, left_end_angle, right_start_angle, right_end_angle, left_detected, right_detected);
+    
         //visualizeCircles(common_center, left_radius, right_radius, state, left_start_angle, left_end_angle, left_start_angle, left_end_angle, left_detected, left_detected);
         //visualizeCircles(common_center, left_radius, right_radius, state, right_start_angle, right_end_angle, right_start_angle, right_end_angle, right_detected, right_detected);
 
     }
 
-    
-    
-    // Cost function to evaluate the fit of the circles
-    float evaluateFit(
-        const pcl::PointCloud<pcl::PointXYZ>::Ptr &cloud,
-        const pcl::PointIndices &indices,
-        const Eigen::Vector2f &center,
-        float radius)
+    Eigen::Vector3f fitQuadraticCurve(pcl::PointCloud<pcl::PointXYZ>::Ptr cluster, rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr pub)
     {
-        float cost = 0.0f;
-        for (int idx : indices.indices) {
-            Eigen::Vector2f p(cloud->points[idx].x, cloud->points[idx].y);
-            float distance = (p - center).norm();
-            cost += (distance - radius) * (distance - radius);  // Squared error
+        std::vector<float> x_vals, y_vals;
+        for (const auto &point : cluster->points)
+        {
+            x_vals.push_back(point.x);
+            y_vals.push_back(point.y);
         }
-        return cost;
-    }
-
-    bool fitCircles(
-        const pcl::PointCloud<pcl::PointXYZ>::Ptr &cloud, 
-        const pcl::PointIndices &left_indices, 
-        const pcl::PointIndices &right_indices,
-        const geometry_msgs::msg::Pose &current_pose_,
-        Eigen::Vector2f &best_center, 
-        float &best_left_radius, 
-        float &best_right_radius)
-    {
-        if (left_indices.indices.size() < 3 || right_indices.indices.size() < 3) {
-            std::cerr << "Error: Not enough points in one or both clusters!\n";
-            return false;
+    
+        Eigen::MatrixXd A(x_vals.size(), 3);
+        Eigen::VectorXd Z(y_vals.size());
+    
+        for (size_t i = 0; i < x_vals.size(); i++) {
+            A(i, 0) = x_vals[i] * x_vals[i]; // x² term
+            A(i, 1) = x_vals[i];             // x term
+            A(i, 2) = 1.0;                   // constant term
+            Z(i) = y_vals[i];
         }
+    
+        // Solve for coefficients
+        Eigen::Vector3d coeffs = A.colPivHouseholderQr().solve(Z);
+        float a = coeffs(0), b = coeffs(1), c = coeffs(2);
 
-        // Step 1: Extract camera position and orientation
-        Eigen::Vector3f camera_position(
-            current_pose_.position.x,
-            current_pose_.position.y,
-            current_pose_.position.z);
+        // Compute transformation using camera pose
+        Eigen::Matrix3f rotation_matrix;
+        Eigen::Vector3f translation_vector;
 
         tf2::Quaternion q(
-            current_pose_.orientation.x,
-            current_pose_.orientation.y,
-            current_pose_.orientation.z,
-            current_pose_.orientation.w);
-        tf2::Matrix3x3 rotation_matrix(q);
+            current_pose_.pose.orientation.x,
+            current_pose_.pose.orientation.y,
+            current_pose_.pose.orientation.z,
+            current_pose_.pose.orientation.w);
+        tf2::Matrix3x3 tf_rotation(q);
+        
+        for (int i = 0; i < 3; ++i)
+            for (int j = 0; j < 3; ++j)
+                rotation_matrix(i, j) = tf_rotation[i][j];
 
-        // Convert tf2::Matrix3x3 to Eigen::Matrix3f
-        Eigen::Matrix3f rotation_matrix_eigen;
-        for (int i = 0; i < 3; ++i) {
-            for (int j = 0; j < 3; ++j) {
-                rotation_matrix_eigen(i, j) = rotation_matrix[i][j];
-            }
+        translation_vector << current_pose_.pose.position.x,
+                            current_pose_.pose.position.y,
+                            current_pose_.pose.position.z;
+
+        visualization_msgs::msg::Marker curve_marker;
+        curve_marker.header.frame_id = "map";
+        curve_marker.header.stamp = this->get_clock()->now();
+        curve_marker.ns = "curve_fit";
+        curve_marker.id = 1;
+        curve_marker.type = visualization_msgs::msg::Marker::LINE_STRIP;
+        curve_marker.scale.x = 0.05; 
+        curve_marker.color.r = 0.0;
+        curve_marker.color.g = 0.0;
+        curve_marker.color.b = 1.0;
+        curve_marker.color.a = 1.0;
+
+        // Generate curve points
+        for (float x = *std::min_element(x_vals.begin(), x_vals.end());
+            x <= *std::max_element(x_vals.begin(), x_vals.end()); x += 0.05)
+        {
+            float y = a * x * x + b * x + c;
+            Eigen::Vector3f point_in_map(x, y, 0.0);
+            Eigen::Vector3f point_in_camera = rotation_matrix.inverse() * (point_in_map - translation_vector);
+
+            // Transform back to map frame
+            Eigen::Vector3f translated_point = (rotation_matrix * point_in_camera) + translation_vector;
+
+            geometry_msgs::msg::Point p;
+            p.x = translated_point[0];
+            p.y = translated_point[1];
+            p.z = 0.0;
+
+            curve_marker.points.push_back(p);
+
         }
 
-        // Step 2: Transform the point cloud into the camera's reference frame
-        pcl::PointCloud<pcl::PointXYZ>::Ptr transformed_cloud(new pcl::PointCloud<pcl::PointXYZ>);
-        for (const auto &point : *cloud) {
-            Eigen::Vector3f point_in_world(point.x, point.y, point.z);
-            Eigen::Vector3f point_in_camera = rotation_matrix_eigen * (point_in_world - camera_position);
-            transformed_cloud->push_back(pcl::PointXYZ(point_in_camera.x(), point_in_camera.y(), point_in_camera.z()));
-        }
 
-        // Step 3: Compute the mean position of each cluster in the camera's frame
-        Eigen::Vector2f left_mean(0.0f, 0.0f);
-        for (int idx : left_indices.indices) {
-            left_mean.x() += transformed_cloud->points[idx].x;
-            left_mean.y() += transformed_cloud->points[idx].y;
-        }
-        left_mean /= left_indices.indices.size();
+        visualization_msgs::msg::MarkerArray markers;
+        markers.markers.push_back(curve_marker);
+        pub->publish(markers);
 
-        Eigen::Vector2f right_mean(0.0f, 0.0f);
-        for (int idx : right_indices.indices) {
-            right_mean.x() += transformed_cloud->points[idx].x;
-            right_mean.y() += transformed_cloud->points[idx].y;
-        }
-        right_mean /= right_indices.indices.size();
-
-        // Step 4: Determine the direction of the track
-        Eigen::Vector2f track_direction = (right_mean - left_mean).normalized();
-
-        // Step 5: Compute the initial shared center as the centroid of all points
-        Eigen::Vector2f center(0.0f, 0.0f);
-        int total_points = left_indices.indices.size() + right_indices.indices.size();
-
-        for (int idx : left_indices.indices) {
-            center.x() += transformed_cloud->points[idx].x;
-            center.y() += transformed_cloud->points[idx].y;
-        }
-        for (int idx : right_indices.indices) {
-            center.x() += transformed_cloud->points[idx].x;
-            center.y() += transformed_cloud->points[idx].y;
-        }
-        center /= total_points;
-
-        // Step 6: Iteratively adjust the center in the opposite direction of the track
-        float min_cost = std::numeric_limits<float>::max();
-        Eigen::Vector2f best_candidate_center = center;
-        float best_candidate_left_radius = 0.0f;
-        float best_candidate_right_radius = 0.0f;
-
-        float step_size = 0.1f;  // Step size for adjusting the center
-        int num_steps = 20;      // Number of steps to try in the opposite direction
-
-        for (int i = 0; i <= num_steps; ++i) {
-            // Move the center in the opposite direction of the track
-            Eigen::Vector2f candidate_center = center - i * step_size * track_direction;
-
-            // Compute the radii for the candidate center
-            float left_radius = 0.0f;
-            for (int idx : left_indices.indices) {
-                Eigen::Vector2f p(transformed_cloud->points[idx].x, transformed_cloud->points[idx].y);
-                left_radius += (p - candidate_center).norm();
-            }
-            left_radius /= left_indices.indices.size();
-
-            float right_radius = 0.0f;
-            for (int idx : right_indices.indices) {
-                Eigen::Vector2f p(transformed_cloud->points[idx].x, transformed_cloud->points[idx].y);
-                right_radius += (p - candidate_center).norm();
-            }
-            right_radius /= right_indices.indices.size();
-
-            // Evaluate the fit of the circles
-            float cost = evaluateFit(transformed_cloud, left_indices, candidate_center, left_radius) +
-                        evaluateFit(transformed_cloud, right_indices, candidate_center, right_radius);
-
-            // Update the best candidate if this one is better
-            if (cost < min_cost) {
-                min_cost = cost;
-                best_candidate_center = candidate_center;
-                best_candidate_left_radius = left_radius;
-                best_candidate_right_radius = right_radius;
-            }
-        }
-
-        // Step 7: Update the output variables
-        best_center = best_candidate_center;
-        best_left_radius = best_candidate_left_radius;
-        best_right_radius = best_candidate_right_radius;
-
-        // Print the results
-        //std::cout << "Optimized Center: (" << best_center.x() << ", " << best_center.y() << ")\n";
-        //std::cout << "Optimized Left Radius: " << best_left_radius << "\n";
-        //std::cout << "Optimized Right Radius: " << best_right_radius << "\n";
-
-        return true;
-    }
-    
-
-    
-
-    
-
-    bool fitSingleCircle(
-        const pcl::PointCloud<pcl::PointXYZ>::Ptr &cloud, 
-        const pcl::PointIndices &indices,
-        const geometry_msgs::msg::Pose &current_pose_,
-        Eigen::Vector2f &best_center, 
-        float &best_radius)
-    {
-        if (indices.indices.size() < 3) {
-            std::cerr << "Error: Not enough points in the cluster!\n";
-            return false;
-        }
-    
-        // Step 1: Extract camera position and orientation
-        Eigen::Vector3f camera_position(
-            current_pose_.position.x,
-            current_pose_.position.y,
-            current_pose_.position.z);
-    
-        tf2::Quaternion q(
-            current_pose_.orientation.x,
-            current_pose_.orientation.y,
-            current_pose_.orientation.z,
-            current_pose_.orientation.w);
-        tf2::Matrix3x3 rotation_matrix(q);
-    
-        // Convert tf2::Matrix3x3 to Eigen::Matrix3f
-        Eigen::Matrix3f rotation_matrix_eigen;
-        for (int i = 0; i < 3; ++i) {
-            for (int j = 0; j < 3; ++j) {
-                rotation_matrix_eigen(i, j) = rotation_matrix[i][j];
-            }
-        }
-    
-        // Step 2: Transform the point cloud into the camera's reference frame
-        pcl::PointCloud<pcl::PointXYZ>::Ptr transformed_cloud(new pcl::PointCloud<pcl::PointXYZ>);
-        for (const auto &point : *cloud) {
-            Eigen::Vector3f point_in_world(point.x, point.y, point.z);
-            Eigen::Vector3f point_in_camera = rotation_matrix_eigen * (point_in_world - camera_position);
-            transformed_cloud->push_back(pcl::PointXYZ(point_in_camera.x(), point_in_camera.y(), point_in_camera.z()));
-        }
-    
-        // Step 3: Compute the mean position of the cluster in the camera's frame
-        Eigen::Vector2f cluster_mean(0.0f, 0.0f);
-        for (int idx : indices.indices) {
-            cluster_mean.x() += transformed_cloud->points[idx].x;
-            cluster_mean.y() += transformed_cloud->points[idx].y;
-        }
-        cluster_mean /= indices.indices.size();
-    
-        // Step 4: Fit a circle to the cluster
-        Eigen::Vector2f center(0.0f, 0.0f);
-        float radius = 0.0f;
-        fitSingleCircleHelper(transformed_cloud, indices, center, radius);
-    
-        // Step 5: Determine the track direction based on curvature
-        float curvature = 1.0f / radius;  // Curvature is 1/r
-        Eigen::Vector2f track_direction;
-    
-        if (curvature > 0) {
-            // Cluster curves to the left: track direction points to the right
-            track_direction = Eigen::Vector2f(1.0f, 0.0f);
-        } else {
-            // Cluster curves to the right: track direction points to the left
-            track_direction = Eigen::Vector2f(-1.0f, 0.0f);
-        }
-    
-        // Step 6: Compute the perpendicular direction
-        Eigen::Vector2f perpendicular_direction(-track_direction.y(), track_direction.x());
-    
-        // Step 7: Apply a larger initial offset in the perpendicular direction
-        float lane_width = 3.0;  // Known lane width in meters
-        Eigen::Vector2f initial_offset = lane_width * perpendicular_direction;
-    
-        // Step 8: Iteratively adjust the center starting from the initial offset
-        float min_cost = std::numeric_limits<float>::max();
-        Eigen::Vector2f best_candidate_center = center + initial_offset;
-        float best_candidate_radius = radius;
-    
-        float step_size = 0.1f;  // Step size for adjusting the center
-        int num_steps = 20;      // Number of steps to try in the opposite direction
-    
-        for (int i = 0; i <= num_steps; ++i) {
-            // Move the center in the opposite direction of the track
-            Eigen::Vector2f candidate_center = center + initial_offset - i * step_size * perpendicular_direction;
-    
-            // Compute the radius for the candidate center
-            float candidate_radius = 0.0f;
-            for (int idx : indices.indices) {
-                Eigen::Vector2f p(transformed_cloud->points[idx].x, transformed_cloud->points[idx].y);
-                candidate_radius += (p - candidate_center).norm();
-            }
-            candidate_radius /= indices.indices.size();
-    
-            // Evaluate the fit of the circle
-            float cost = evaluateFit(transformed_cloud, indices, candidate_center, candidate_radius);
-    
-            // Update the best candidate if this one is better
-            if (cost < min_cost) {
-                min_cost = cost;
-                best_candidate_center = candidate_center;
-                best_candidate_radius = candidate_radius;
-            }
-        }
-    
-        // Step 9: Update the output variables
-        best_center = best_candidate_center;
-        best_radius = best_candidate_radius;
-    
-        // Print the results
-        std::cout << "Optimized Center: (" << best_center.x() << ", " << best_center.y() << ")\n";
-        std::cout << "Optimized Radius: " << best_radius << "\n";
-    
-        return true;
-    }
-
-    void fitSingleCircleHelper(
-        const pcl::PointCloud<pcl::PointXYZ>::Ptr &cloud, 
-        const pcl::PointIndices &indices,
-        Eigen::Vector2f &center, 
-        float &radius)
-    {
-        // Compute the centroid of the cluster
-        center = Eigen::Vector2f(0.0f, 0.0f);
-        for (int idx : indices.indices) {
-            center.x() += cloud->points[idx].x;
-            center.y() += cloud->points[idx].y;
-        }
-        center /= indices.indices.size();
-    
-        // Compute the radius as the average distance to the center
-        radius = 0.0f;
-        for (int idx : indices.indices) {
-            Eigen::Vector2f p(cloud->points[idx].x, cloud->points[idx].y);
-            radius += (p - center).norm();
-        }
-        radius /= indices.indices.size();
+        return coeffs.cast<float>();
     }
 
 
-    void visualizeCircles(const Eigen::Vector2f &center, float left_radius, float right_radius, 
-        const Eigen::VectorXf &filtered_state, float left_start_angle, float left_end_angle, 
-        float right_start_angle, float right_end_angle, bool left_detected, bool right_detected)
+    float calculateOffset(float a, float b, float x_ref, float lane_width) {
+        float slope = 2*a*x_ref + b;  // dy/dx at reference point
+        return lane_width * sqrt(1 + slope*slope);
+    }
+    
+    Eigen::Vector3f estimateRightFromLeft(const Eigen::Vector3f& left_coeffs, Eigen::Vector3f  &lane_transform_ ) {
+    
+        Eigen::Vector3f aux;
+        aux[0]=left_coeffs[0] + lane_transform_[0];
+        aux [1] = left_coeffs[1] + lane_transform_[1];
+        aux [2] = left_coeffs[2] + lane_transform_[2];
+        return aux;
+    }
+    
+    Eigen::Vector3f estimateLeftFromRight(const Eigen::Vector3f& right_coeffs, Eigen::Vector3f  &lane_transform_ ) {
+        
+        Eigen::Vector3f aux;
+        aux[0]=right_coeffs[0] - lane_transform_[0];
+        aux [1] = right_coeffs[1] - lane_transform_[1];
+        aux [2] = right_coeffs[2] - lane_transform_[2];
+
+        return aux;
+    }
+
+
+    void visualizeKalmanState(
+        const Eigen::VectorXf& state,
+        rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr publisher,
+        bool left_detected,
+        bool right_detected,
+        float x_min = -5.0f,
+        float x_max = 20.0f,
+        float step = 0.25f) 
     {
         visualization_msgs::msg::MarkerArray marker_array;
     
-        // Reconstruct circles using the shared center
-        Eigen::Vector3f left_circle(center[0], center[1], left_radius);
-        Eigen::Vector3f right_circle(center[0], center[1], right_radius);
+        // Extract coefficients from state vector
+        Eigen::Vector3f left_coeffs(state[0], state[1], state[2]);
+        Eigen::Vector3f right_coeffs(state[6], state[7], state[8]);
     
-        // Visualize only the relevant parts of the circles
-        if (left_detected)  
-            marker_array.markers.push_back(createArcMarker(left_circle, 0, 0.0, 0.0, 1.0, left_start_angle, left_end_angle));  // Blue
-        
-        if (right_detected)  
-            marker_array.markers.push_back(createArcMarker(right_circle, 1, 1.0, 0.0, 0.0, right_start_angle, right_end_angle)); // Red
+        // Left lane marker (blue for detected, light blue for estimated)
+        visualization_msgs::msg::Marker left_marker;
+        left_marker.header.frame_id = "map";
+        left_marker.header.stamp = this->now();
+        left_marker.ns = "kalman_lanes";
+        left_marker.id = 0;
+        left_marker.type = visualization_msgs::msg::Marker::LINE_STRIP;
+        left_marker.action = visualization_msgs::msg::Marker::ADD;
+        left_marker.scale.x = 0.05;
+        left_marker.color.a = 1.0;
+        left_marker.color.b = 1.0; // Blue base
+        left_marker.color.g = left_detected ? 0.0 : 0.5; // Light blue if estimated
+        left_marker.pose.orientation.w = 1.0;
     
-        // Kalman-filtered state
-        Eigen::Vector3f filtered_left_circle(filtered_state[0], filtered_state[1], filtered_state[2]);
-        Eigen::Vector3f filtered_right_circle(filtered_state[0], filtered_state[1], filtered_state[3]); // Same center, different radius
+        // Right lane marker (red for detected, pink for estimated)
+        visualization_msgs::msg::Marker right_marker = left_marker;
+        right_marker.id = 1;
+        right_marker.color.r = 1.0; // Red base
+        right_marker.color.b = right_detected ? 0.0 : 0.5; // Pink if estimated
+        right_marker.color.g = 0.0;
     
-        marker_array.markers.push_back(createArcMarker(filtered_left_circle, 2, 0.0, 1.0, 0.0, left_start_angle, left_end_angle)); // Green
-        marker_array.markers.push_back(createArcMarker(filtered_right_circle, 3, 1.0, 1.0, 0.0, right_start_angle, right_end_angle)); // Yellow
+        // Generate curve points
+        for (float x = x_min; x <= x_max; x += step) {
+            // Left lane point
+            geometry_msgs::msg::Point p_left;
+            p_left.x = x;
+            p_left.y = left_coeffs[0] * x * x + left_coeffs[1] * x + left_coeffs[2];
+            p_left.z = 0;
+            left_marker.points.push_back(p_left);
     
-        curve_publisher_->publish(marker_array);
-    }
-    
-
-
-    visualization_msgs::msg::Marker createArcMarker(const Eigen::Vector3f &circle, int id, float r, float g, float b)
-    {
-        visualization_msgs::msg::Marker marker;
-        marker.header.frame_id = "map";
-        marker.header.stamp = this->now();
-        marker.ns = "circle_fit";
-        marker.id = id;
-        marker.type = visualization_msgs::msg::Marker::LINE_STRIP;
-        marker.action = visualization_msgs::msg::Marker::ADD;
-
-        for (float theta = 0; theta <= M_PI; theta += 0.1)
-        {
-            geometry_msgs::msg::Point p;
-            p.x = circle[0] + circle[2] * cos(theta);
-            p.y = circle[1] + circle[2] * sin(theta);
-            marker.points.push_back(p);
+            // Right lane point
+            geometry_msgs::msg::Point p_right;
+            p_right.x = x;
+            p_right.y = right_coeffs[0] * x * x + right_coeffs[1] * x + right_coeffs[2];
+            p_right.z = 0;
+            right_marker.points.push_back(p_right);
         }
-
-        marker.scale.x = 0.05;
-        marker.color.r = r;
-        marker.color.g = g;
-        marker.color.b = b;
-        marker.color.a = 1.0;
-
-        return marker;
+    
+        // Add lane width indicator every 5 meters
+        for (float x = x_min; x <= x_max; x += 5.0f) {
+            visualization_msgs::msg::Marker width_marker;
+            width_marker.header = left_marker.header;
+            width_marker.ns = "lane_width";
+            width_marker.id = x * 100; // Unique ID based on x-position
+            width_marker.type = visualization_msgs::msg::Marker::LINE_LIST;
+            width_marker.scale.x = 0.05;
+            width_marker.color.r = 1.0;
+            width_marker.color.g = 1.0;
+            width_marker.color.a = 0.5;
+    
+            geometry_msgs::msg::Point p_left, p_right;
+            p_left.x = x;
+            p_left.y = left_coeffs[0] * x * x + left_coeffs[1] * x + left_coeffs[2];
+            p_right.x = x;
+            p_right.y = right_coeffs[0] * x * x + right_coeffs[1] * x + right_coeffs[2];
+    
+            width_marker.points.push_back(p_left);
+            width_marker.points.push_back(p_right);
+            marker_array.markers.push_back(width_marker);
+        }
+    
+        // Add markers to array
+        marker_array.markers.push_back(left_marker);
+        marker_array.markers.push_back(right_marker);
+    
+        // Add text markers for coefficients
+        visualization_msgs::msg::Marker text_marker;
+        text_marker.header = left_marker.header;
+        text_marker.ns = "coefficients";
+        text_marker.type = visualization_msgs::msg::Marker::TEXT_VIEW_FACING;
+        text_marker.scale.z = 0.3;
+        text_marker.color.a = 1.0;
+        text_marker.color.r = 1.0;
+        text_marker.color.g = 1.0;
+        text_marker.color.b = 1.0;
+    
+        // Left coefficients text
+        text_marker.id = 100;
+        text_marker.pose.position.x = x_min + 1.0;
+        text_marker.pose.position.y = left_coeffs[0] * x_min * x_min + left_coeffs[1] * x_min + left_coeffs[2] + 1.0;
+        text_marker.text = "Left: " + 
+                          std::to_string(left_coeffs[0]) + "x² + " + 
+                          std::to_string(left_coeffs[1]) + "x + " + 
+                          std::to_string(left_coeffs[2]) + 
+                          (left_detected ? "" : " (estimated)");
+        marker_array.markers.push_back(text_marker);
+    
+        // Right coefficients text
+        text_marker.id = 101;
+        text_marker.pose.position.x = x_min + 1.0;
+        text_marker.pose.position.y = right_coeffs[0] * x_min * x_min + right_coeffs[1] * x_min + right_coeffs[2] - 1.0;
+        text_marker.text = "Right: " + 
+                           std::to_string(right_coeffs[0]) + "x² + " + 
+                           std::to_string(right_coeffs[1]) + "x + " + 
+                           std::to_string(right_coeffs[2]) + 
+                           (right_detected ? "" : " (estimated)");
+        marker_array.markers.push_back(text_marker);
+    
+        publisher->publish(marker_array);
     }
 
 
+    Eigen::Vector3f calculateAndStoreTransform(const Eigen::Vector3f& left_coeffs, 
+        const Eigen::Vector3f& right_coeffs) 
+    {
+        Eigen::Vector3f lane_transform_;
+        lane_transform_ = right_coeffs - left_coeffs;
 
+        return lane_transform_;
+    }
 
     std::vector<pcl::PointIndices> clusterWhitePoints( pcl::PointCloud<pcl::PointXYZ>::Ptr cloud,const geometry_msgs::msg::Pose &current_pose_) // Camera pose
     {
@@ -772,65 +735,7 @@ private:
     
 
 
-
-    void computeArcAngles(const pcl::PointCloud<pcl::PointXYZ>::Ptr &cloud, 
-        const pcl::PointIndices &cluster, 
-        const Eigen::Vector2f &center, // Only (x, y) now
-        float &start_angle, float &end_angle)
-    {
-        if (cluster.indices.empty())
-        {
-            return;
-        }
     
-        float min_angle = std::numeric_limits<float>::infinity();
-        float max_angle = -std::numeric_limits<float>::infinity();
-    
-        for (int idx : cluster.indices)
-        {
-            float x = cloud->points[idx].x;
-            float y = cloud->points[idx].y;
-    
-            // Compute angle relative to the shared center
-            float theta = atan2(y - center[1], x - center[0]);
-    
-            min_angle = std::min(min_angle, theta);
-            max_angle = std::max(max_angle, theta);
-        }
-    
-        start_angle = min_angle;
-        end_angle = max_angle;
-    }
-    
-
-    visualization_msgs::msg::Marker createArcMarker(const Eigen::Vector3f &circle, 
-        int id, float r, float g, float b, 
-        float start_angle, float end_angle)
-    {
-        visualization_msgs::msg::Marker marker;
-        marker.header.frame_id = "map";
-        marker.header.stamp = this->now();
-        marker.ns = "circle_fit";
-        marker.id = id;
-        marker.type = visualization_msgs::msg::Marker::LINE_STRIP;
-        marker.action = visualization_msgs::msg::Marker::ADD;
-
-        for (float theta = start_angle; theta <= end_angle; theta += 0.05) // Smaller step for smoother arc
-        {
-        geometry_msgs::msg::Point p;
-        p.x = circle[0] + circle[2] * cos(theta);
-        p.y = circle[1] + circle[2] * sin(theta);
-        marker.points.push_back(p);
-        }
-
-        marker.scale.x = 0.05; // Line thickness
-        marker.color.r = r;
-        marker.color.g = g;
-        marker.color.b = b;
-        marker.color.a = 1.0;
-
-        return marker;
-    }
 
 
 
@@ -951,7 +856,9 @@ private:
     geometry_msgs::msg::PoseStamped current_pose_;
     rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr white_publisher_;
     //rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr distance_orientation_marker_pub_;
-    rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr curve_publisher_;
+    rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr curve_publisher_left_;
+    rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr curve_publisher_right_;
+    rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr kalman_publisher_;
     //rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr marker_publisher2_;
     rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr cluster_marker_pub_;
     rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr test_cluster_marker_pub_;
