@@ -288,8 +288,8 @@ private:
         
         if(!fit_side_)
         {
-            left_detected=true;
-            right_detected=false;
+            left_detected=false;
+            right_detected=true;
         }
         if (left_detected && right_detected) {
             
