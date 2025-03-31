@@ -19,6 +19,8 @@ find_package(tf2_ros REQUIRED)
 find_package(tf2_sensor_msgs REQUIRED)
 find_package(OpenCV REQUIRED)
 find_package(GSL REQUIRED)
+find_package(tf2_geometry_msgs REQUIRED)
+find_package(std_msgs REQUIRED)
 
 
 find_package(PCL REQUIRED COMPONENTS common io surface)
@@ -260,6 +262,7 @@ ament_target_dependencies(kalman_spline
   tf2
   tf2_ros
   tf2_sensor_msgs
+  tf2_geometry_msgs
   
 )
 
@@ -269,6 +272,54 @@ target_link_libraries(kalman_spline
     tf2_ros::tf2_ros
     ${PCL_LIBRARIES}
 )
+
+add_executable(test_cluster_only src/test_cluster_only.cpp)
+
+ament_target_dependencies(test_cluster_only
+  rclcpp
+  std_msgs
+  sensor_msgs
+  pcl_ros
+  pcl_conversions
+  visualization_msgs
+  tf2
+  tf2_ros
+  tf2_sensor_msgs
+  tf2_geometry_msgs
+  
+)
+
+target_link_libraries(test_cluster_only
+    ${OpenCV_LIBS}
+    tf2::tf2
+    tf2_ros::tf2_ros
+    ${PCL_LIBRARIES}
+)
+
+
+add_executable(motion_kalman src/motion_kalman_attempt.cpp)
+
+ament_target_dependencies(motion_kalman
+  rclcpp
+  std_msgs
+  sensor_msgs
+  pcl_ros
+  pcl_conversions
+  visualization_msgs
+  tf2
+  tf2_ros
+  tf2_sensor_msgs
+  tf2_geometry_msgs
+  
+)
+
+target_link_libraries(motion_kalman
+    ${OpenCV_LIBS}
+    tf2::tf2
+    tf2_ros::tf2_ros
+    ${PCL_LIBRARIES}
+)
+
 
 
 
@@ -288,6 +339,8 @@ install(TARGETS
   skeleton_spline
   spline_only
   kalman_spline
+  test_cluster_only
+  motion_kalman
   DESTINATION lib/${PROJECT_NAME}
 )
 

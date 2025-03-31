@@ -34,13 +34,19 @@
 #include <numeric>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
 
+#include <deque>
+#include <utility> // for std::pair
+#include "std_msgs/msg/float32.hpp"
+
+using std::placeholders::_1;
+
 
 
 
 class KalmanCircleLocalization : public rclcpp::Node
 {
 public:
-    KalmanCircleLocalization() : Node("kalman_circ_node")
+    KalmanCircleLocalization() : Node("kalman_circ_node"), last_speed_time_(this->now()), last_servo_time_(this->now())
     {
         subscription_ = this->create_subscription<sensor_msgs::msg::PointCloud2>(
             "/ground_plane", rclcpp::SensorDataQoS(),
@@ -49,6 +55,13 @@ public:
         pose_subscription_ = this->create_subscription<geometry_msgs::msg::PoseStamped>(
             "/zed/zed_node/pose", 10,
             std::bind(&KalmanCircleLocalization::poseCallback, this, std::placeholders::_1));
+
+        speed_sub_ = create_subscription<std_msgs::msg::Float32>(
+            "/commands/motor/speed", 10,
+            std::bind(&KalmanCircleLocalization::speedCallback, this, _1));
+        servo_sub_ = create_subscription<std_msgs::msg::Float32>(
+            "/commands/servo/position", 10,
+            std::bind(&KalmanCircleLocalization::servoCallback, this, _1));
 
         white_publisher_ = this->create_publisher<sensor_msgs::msg::PointCloud2>("/white_only", 10);
         marker_pub_ = this->create_publisher<visualization_msgs::msg::MarkerArray>("camera_axes", 10);
@@ -67,6 +80,9 @@ public:
         this->declare_parameter("fit_side", true);
         this->get_parameter("fit_side", fit_side_);
 
+        this->declare_parameter("time_jump_threshold", 1.0);
+        this->get_parameter("time_jump_threshold", time_jump_threshold_);
+
         // Initialize state [a_L, b_L, c_L, ȧ_L, ḃ_L, ċ_L, a_R, b_R, c_R, ȧ_R, ḃ_R, ċ_R]
         state = Eigen::VectorXf::Zero(12);
         state << 0.01, 0.0, 0.0, 0.0, 0.0, 0.0,   // Left lane (slight initial curvature)
@@ -75,16 +91,20 @@ public:
 
         // Initialize covariance matrix
         P = Eigen::MatrixXf::Identity(12,12) * 0.1;
-
+        P.block(0,0,3,3) *= 0.1f;  // Higher confidence in a,b,c
+        P.block(6,6,3,3) *= 0.1f;
+        P.block(3,3,3,3) *= 1.0f;  // Higher uncertainty for derivatives
+        P.block(9,9,3,3) *= 1.0f;
 
         // Process noise
-        Q = Eigen::MatrixXf::Identity(12,12) * 0.01;
-        // Higher uncertainty for derivative terms
-        Q.block(3,3,3,3) = Eigen::MatrixXf::Identity(3,3) * 0.1;  // Left derivatives
-        Q.block(9,9,3,3) = Eigen::MatrixXf::Identity(3,3) * 0.1;  // Right derivatives
-        
+        Q = Eigen::MatrixXf::Identity(12,12) * 0.05;  // Increased base from 0.01
+        Q.block(0,0,3,3) *= 0.01f;  // a,b,c process noise (slightly higher)
+        Q.block(6,6,3,3) *= 0.01f;
+        Q.block(3,3,3,3) *= 0.1f;   // Derivative process noise (10x higher)
+        Q.block(9,9,3,3) *= 0.1f;
+                
         //Measurement noise
-        R = Eigen::MatrixXf::Identity(6,6) * 0.05;  // For full observation case
+        R = Eigen::MatrixXf::Identity(6,6) * 0.01;  // For full observation case
         I = Eigen::MatrixXf::Identity(12,12);
 
         // State transition model with coupling between lanes
@@ -104,14 +124,12 @@ public:
         H_full.block(0,0,3,3) = Eigen::Matrix3f::Identity();  // Left coeffs
         H_full.block(3,6,3,3) = Eigen::Matrix3f::Identity();  // Right coeffs
         
-        H_left_only = Eigen::MatrixXf::Zero(3,12);
-        H_left_only.block(0,0,3,3) = Eigen::Matrix3f::Identity();
+            // In constructor:
+        last_speed_time_ = this->now();
+        last_servo_time_ = this->now();
 
-        H_right_only = Eigen::MatrixXf::Zero(3,12);
-        H_right_only.block(0,6,3,3) = Eigen::Matrix3f::Identity();
-
-
-
+        current_control_[0] = 0.0f; // Default to stopped
+        last_speed_value_ = 0.0f;
     }
 
 private:
@@ -122,12 +140,52 @@ private:
     */
     
     Eigen::VectorXf state;
-    Eigen::MatrixXf P, Q, R, I, F, H, H_full, H_left_only, H_right_only;
+    Eigen::MatrixXf P, Q, R, I, F, H, H_full;
     float left_start_angle = 0.0, left_end_angle = 0.0;
     float right_start_angle = 0.0, right_end_angle = 0.0;
     Eigen::Vector3f lane_transform_;
     std::shared_ptr<tf2_ros::Buffer> tf_buffer_;
     std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
+    rclcpp::Time last_callback_time_; 
+    Eigen::Vector2f current_control_ = Eigen::Vector2f::Zero();
+    rclcpp::Time last_update_time_;
+    bool first_update_ = true;
+    std::deque<std::pair<rclcpp::Time, float>> speed_history_;
+    std::deque<std::pair<rclcpp::Time, float>> servo_history_;
+
+    rclcpp::Time last_speed_time_;
+    rclcpp::Time last_servo_time_;
+    float speed_timeout_ = 0.5;  // 500ms timeout
+    float servo_timeout_ = 0.5;
+
+    float last_speed_value_ = 0.0f;
+
+    double time_jump_threshold_ = 1.0; // Configurable threshold in seconds
+
+
+
+
+
+    const float wheel_radius_ = 0.1f;      // 10cm
+    const float wheelbase_L_ = 0.22f;      // 22cm
+    const float rpm_to_ms_ = (2.0 * M_PI * wheel_radius_) / 60.0f;  // Exact conversion factor
+    const float servo_to_rad_ = 0.6f;      // Assuming servo uses [-1,1] range for ±0.5rad (28.6°)
+
+    void initializeFilter() {
+        // Reset to initial state
+        state = Eigen::VectorXf::Zero(12);
+        state << 0.01, 0.0, 0.0, 0.0, 0.0, 0.0,   // Left lane
+                 0.01, 0.0, 1.4, 0.0, 0.0, 0.0;    // Right lane
+        
+        // Reset covariance
+        P = Eigen::MatrixXf::Identity(12,12) * 0.1;
+        P.block(0,0,3,3) *= 0.1f;
+        P.block(6,6,3,3) *= 0.1f;
+        P.block(3,3,3,3) *= 1.0f;
+        P.block(9,9,3,3) *= 1.0f;
+        
+        first_update_ = true;
+    }
 
 
     void poseCallback(const geometry_msgs::msg::PoseStamped::SharedPtr msg)
@@ -135,8 +193,65 @@ private:
         current_pose_ = *msg;
     }
 
+    void speedCallback(const std_msgs::msg::Float32::SharedPtr msg) {
+        last_speed_time_ = this->now();
+        current_control_[0] = msg->data * rpm_to_ms_;
+    }
+    
+    void servoCallback(const std_msgs::msg::Float32::SharedPtr msg) {
+        last_servo_time_ = this->now();
+        current_control_[1] = msg->data * servo_to_rad_;
+    }
+
     void pointCloudCallback(const sensor_msgs::msg::PointCloud2::SharedPtr msg)
     {
+
+        rclcpp::Time current_time = msg->header.stamp;
+        float dt;
+
+        if (first_update_) {
+            dt = 1.0/30.0;  // Assume 30Hz for first update
+            first_update_ = false;
+        } else {
+            dt = (current_time - last_update_time_).seconds();
+            
+            // More robust bag loop detection
+            const double time_jump_threshold = 1.0; // 1 second
+            if (current_time < last_update_time_) {
+                // Only reset if significant backward jump (not just small timestamp fluctuation)
+                if ((last_update_time_ - current_time).seconds() > time_jump_threshold) {
+                    RCLCPP_INFO(this->get_logger(), "Significant time jump detected (%.3fs), resetting filter", 
+                            (last_update_time_ - current_time).seconds());
+                    initializeFilter();
+                    dt = 1.0/30.0;
+                } else {
+                    // Small backward fluctuation - just warn and continue
+                    RCLCPP_DEBUG(this->get_logger(), 
+                                "Minor timestamp fluctuation (%.3fs), ignoring",
+                                (last_update_time_ - current_time).seconds());
+                    dt = 0.001; // Small positive dt to keep moving forward
+                }
+            }
+            
+            // Sanity checks
+            if (dt <= 0 || dt > 0.5) {
+                dt = 0.1;
+                RCLCPP_WARN(this->get_logger(), "Invalid dt=%.3f, using default", dt);
+            }
+        }
+        last_update_time_ = current_time;
+
+        // Add this check for control commands (NEW)
+        if ((current_time - last_speed_time_).seconds() > speed_timeout_) {
+            current_control_[0] = 0.0f;  // Zero speed if no recent commands
+            RCLCPP_DEBUG(this->get_logger(), "Speed command timeout, assuming zero");
+        }
+
+        if ((current_time - last_servo_time_).seconds() > servo_timeout_) {
+            current_control_[1] = 0.0f;  // Zero steering if no recent commands
+            RCLCPP_DEBUG(this->get_logger(), "Servo command timeout, assuming straight");
+        }
+        
         pcl::PointCloud<pcl::PointXYZRGB>::Ptr cloud(new pcl::PointCloud<pcl::PointXYZRGB>());
         pcl::fromROSMsg(*msg, *cloud);
 
@@ -274,40 +389,6 @@ private:
         //fitCircle(white_cloud, leftmost_cluster, left_circle);
         //RCLCPP_INFO(this->get_logger(), "Circle 1: x=%f, y=%f, r=%f", left_circle[0], left_circle[1], left_circle[2]);
 
-        //fitCircle(white_cloud, rightmost_cluster, right_circle);
-        //RCLCPP_INFO(this->get_logger(), "Circle 1: x=%f, y=%f, r=%f", right_circle[0], right_circle[1], right_circle[2]);
-        /*
-        if (left_detected && right_detected) {
-            // Both clusters detected: fit circles as usual
-            fitCircles(white_cloud, leftmost_cluster, rightmost_cluster, current_pose_.pose, center, left_radius, right_radius);
-            Z << center[0], center[1], left_radius, right_radius;
-        } else if (left_detected) {
-            // Only left cluster detected: fit a single circle to the left cluster
-            fitSingleCircle(white_cloud, leftmost_cluster, current_pose_.pose, center, left_radius);
-        
-            // Derive the right cluster based on the known lane width
-            float lane_width = 1.4f;  // Known lane width in meters
-            Eigen::Vector2f right_center = center; 
-            float right_radius = left_radius + lane_width;  // Assume the same radius for simplicity
-        
-            Z << center[0], center[1], left_radius, right_radius;
-        } else if (right_detected) {
-            // Only right cluster detected: fit a single circle to the right cluster
-            fitSingleCircle(white_cloud, rightmost_cluster, current_pose_.pose, center, right_radius);
-        
-            // Derive the left cluster based on the known lane width
-            float lane_width = 1.4f;  // Known lane width in meters
-            Eigen::Vector2f left_center = center;  // Shift to the left
-            float left_radius = right_radius - lane_width;  // Assume the same radius for simplicity
-        
-            Z << center[0], center[1], left_radius, right_radius;
-        }
-        else
-        {
-            return;
-        }
-            */
-
         // Measurement Update Logic
         Eigen::VectorXf Z;
         Eigen::MatrixXf H;
@@ -341,9 +422,6 @@ private:
             R_current = R;
 
 
-            // Both clusters detected: fit circles as usual
-            //fitCircles(white_cloud, leftmost_cluster, rightmost_cluster, current_pose_.pose, center, left_radius, right_radius);
-            //Z << center[0], center[1], left_radius, right_radius;
         
         } else if (left_detected) {
             // Only left cluster detected: fit a single circle to the left cluster
@@ -375,27 +453,13 @@ private:
             R_current.block(0,0,3,3) *= 2.0; // Higher uncertainty for estimated left lane
         }
             
-        /*
-        } else if (!fit_side_) {
-            // Only right cluster detected: fit a single circle to the right cluster
-            fitSingleCircle(white_cloud, rightmost_cluster, current_pose_.pose, center, right_radius);
-        
-            // Derive the left cluster based on the known lane width
-            float lane_width = 1.35f;  // Known lane width in meters
-            Eigen::Vector2f left_center = center;  // Shift to the left
-            float left_radius = right_radius - lane_width;  // Assume the same radius for simplicity
-        
-            Z << center[0], center[1], left_radius, right_radius;
-        }
-        */
         else
         {
             return;
         }
 
         // Kalman Prediction Step
-        state = F * state;
-        P = F * P * F.transpose() + Q;
+        predictionStep(current_time, dt);
 
 
         // Kalman Update Step
@@ -429,6 +493,86 @@ private:
         //visualizeCircles(common_center, left_radius, right_radius, state, right_start_angle, right_end_angle, right_start_angle, right_end_angle, right_detected, right_detected);
 
     }
+
+    std::pair<float, float> findNearestControl(const std::deque<std::pair<rclcpp::Time, float>>& history, 
+        rclcpp::Time query_time) 
+    {
+        for (auto it = history.rbegin(); it != history.rend(); ++it) 
+        {
+            if (it->first <= query_time) 
+            {
+                return {it->second, (query_time - it->first).seconds()};
+            }
+        }
+        return {0.0f, 0.0f};  // Default if no recent control
+    }
+
+    // Kalman Prediction Step with Motion Model
+    void predictionStep(rclcpp::Time current_time, float dt) {
+        // 1. Handle command timeouts
+        const bool speed_timed_out = (current_time - last_speed_time_).seconds() > speed_timeout_;
+        const bool servo_timed_out = (current_time - last_servo_time_).seconds() > servo_timeout_;
+        
+        // For servo: timeout → assume straight (0.0)
+        if (servo_timed_out) {
+            current_control_[1] = 0.0f;
+            RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 1000,
+                                "Servo command timeout, assuming straight");
+        }
+    
+        // 2. Try to update controls if not timed out
+        if (!speed_timed_out || !servo_timed_out) {
+            auto [speed_value, speed_lag] = findNearestControl(speed_history_, current_time);
+            auto [servo_value, servo_lag] = findNearestControl(servo_history_, current_time);
+            
+            // For speed: only update if we got a fresh value
+            if (speed_lag < 0.1 && !speed_timed_out) {
+                current_control_[0] = speed_value * rpm_to_ms_;
+                last_speed_value_ = current_control_[0]; // Store last good value
+            }
+            
+            // For servo: update if fresh and not timed out
+            if (servo_lag < 0.1 && !servo_timed_out) {
+                current_control_[1] = servo_value * servo_to_rad_;
+            }
+        }
+    
+        // 3. Apply bicycle model if we have motion
+        if (std::abs(current_control_[0]) > 0.01f) {  // Small threshold to avoid drift
+            const float v = current_control_[0];
+            const float gamma = current_control_[1];
+            tf2::Quaternion q(
+                current_pose_.pose.orientation.x,
+                current_pose_.pose.orientation.y,
+                current_pose_.pose.orientation.z,
+                current_pose_.pose.orientation.w);
+            const float theta = q.getAngle();
+            
+            // Calculate motion deltas
+            const float delta_theta = (v * tan(gamma) / wheelbase_L_) * dt;
+            const float delta_y = v * sin(theta) * dt;
+            
+            // Update state
+            state[1] -= delta_theta;  // b_L
+            state[2] -= delta_y;      // c_L
+            state[7] -= delta_theta;  // b_R 
+            state[8] -= delta_y;      // c_R
+            
+            // Adaptive process noise
+            const float turn_factor = 1.0f + (2.0f * std::abs(gamma));
+            Q.block(1,1,2,2) = Eigen::Matrix2f::Identity() * 0.01f * turn_factor;
+            Q.block(7,7,2,2) = Eigen::Matrix2f::Identity() * 0.01f * turn_factor;
+        }
+    
+        // 4. State transition matrix
+        F = Eigen::MatrixXf::Identity(12,12);
+        F(0,3) = dt; F(1,4) = dt; F(2,5) = dt;   // Left lane
+        F(6,9) = dt; F(7,10) = dt; F(8,11) = dt;  // Right lane
+    
+        // 5. Covariance prediction
+        P = F * P * F.transpose() + Q;
+    }
+
 
     Eigen::Vector3f fitQuadraticCurve(pcl::PointCloud<pcl::PointXYZ>::Ptr cluster, 
         rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr pub,
@@ -572,7 +716,7 @@ private:
                     min_x = std::min(min_x, pt_cam.x());
                     max_x = std::max(max_x, pt_cam.x());
                 }
-                return std::make_pair(min_x - 0.5f, max_x + 0.5f); // Add small padding
+                return std::make_pair(min_x - 0.0f, max_x + 0.0f); // Add small padding
             };
         
             auto [left_min_x, left_max_x] = getCameraXRange(left_cluster_indices);
@@ -586,7 +730,7 @@ private:
             left_marker.id = 0;
             left_marker.type = visualization_msgs::msg::Marker::LINE_STRIP;
             left_marker.action = visualization_msgs::msg::Marker::ADD;
-            left_marker.scale.x = 0.1; // Line width
+            left_marker.scale.x = 0.05; // Line width
             left_marker.color.a = 1.0;
             left_marker.color.g = left_detected ? 1.0 : 0.5;  // Green if detected
             left_marker.color.b = left_detected ? 0.0 : 1.0;  // Blue if estimated
@@ -652,9 +796,9 @@ private:
     {
         // 1. Verify frame_id is map
         if (cloud->header.frame_id != "map") {
-            RCLCPP_WARN(this->get_logger(), 
-                "Expected point cloud in map frame, got %s. Proceeding anyway.",
-                cloud->header.frame_id.c_str());
+            //RCLCPP_WARN(this->get_logger(), 
+                //"Expected point cloud in map frame, got %s. Proceeding anyway.",
+            //    cloud->header.frame_id.c_str());
         }
     
         // 2. Perform Euclidean clustering
@@ -663,8 +807,8 @@ private:
         
         std::vector<pcl::PointIndices> clusters;
         pcl::EuclideanClusterExtraction<pcl::PointXYZ> ec;
-        ec.setClusterTolerance(0.08);  // 8cm
-        ec.setMinClusterSize(200);     // Minimum points per cluster
+        ec.setClusterTolerance(0.06);  // 8cm
+        ec.setMinClusterSize(250);     // Minimum points per cluster
         ec.setMaxClusterSize(5000);    // Maximum points per cluster
         ec.setSearchMethod(tree);
         ec.setInputCloud(cloud);
@@ -904,7 +1048,15 @@ private:
 
     rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr subscription_;
     rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr pose_subscription_;
+
     geometry_msgs::msg::PoseStamped current_pose_;
+
+    rclcpp::Subscription<std_msgs::msg::Float32>::SharedPtr speed_sub_;
+    rclcpp::Subscription<std_msgs::msg::Float32>::SharedPtr servo_sub_;
+
+
+
+
     rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr white_publisher_;
     //rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr distance_orientation_marker_pub_;
     rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr curve_publisher_left_;

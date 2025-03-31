@@ -185,86 +185,64 @@ private:
         camera_position[1]=current_pose_.pose.position.y;
         camera_position[2]=current_pose_.pose.position.z;
         
-        if (!selected_clusters.empty()) {
-            // Camera position and orientation in map frame
-            Eigen::Vector3f camera_position(
-                current_pose_.pose.position.x,
-                current_pose_.pose.position.y,
-                current_pose_.pose.position.z);
-        
-            // Get camera orientation
-            tf2::Quaternion q(
-                current_pose_.pose.orientation.x,
-                current_pose_.pose.orientation.y,
-                current_pose_.pose.orientation.z,
-                current_pose_.pose.orientation.w);
-            tf2::Matrix3x3 m(q);
-            double roll, pitch, yaw;
-            m.getRPY(roll, pitch, yaw);
-            const float cos_yaw = cos(yaw);
-            const float sin_yaw = sin(yaw);
-        
-            // Variables to track left/right clusters
-            float max_left_score = -std::numeric_limits<float>::infinity();
-            float min_right_score = std::numeric_limits<float>::infinity();
-            pcl::PointIndices left_candidate, right_candidate;
-        
-            for (const auto& cluster : selected_clusters) {
-                // Voting system for left/right determination
-                int left_votes = 0;
-                int right_votes = 0;
-                float total_y_cam = 0.0f;
-        
-                // Analyze all points in the cluster
-                for (int idx : cluster.indices) {
-                    const auto& point = white_cloud->points[idx];
-                    Eigen::Vector3f relative_pos(
-                        point.x - camera_position[0],
-                        point.y - camera_position[1],
-                        point.z - camera_position[2]);
-        
-                    // Transform to camera frame
-                    float y_cam = -relative_pos[0] * sin_yaw + relative_pos[1] * cos_yaw;
-                    total_y_cam += y_cam;
-        
-                    // Vote based on point's position
-                    if (y_cam > 0) {
-                        left_votes++;
-                    } else {
-                        right_votes++;
-                    }
-                }
-        
-                // Calculate cluster score (positive for left, negative for right)
-                float mean_y_cam = total_y_cam / cluster.indices.size();
-                float cluster_score = (left_votes - right_votes) * std::abs(mean_y_cam);
-        
-                // Determine if this is the strongest left or right candidate
-                if (cluster_score > 0 && cluster_score > max_left_score) {
-                    max_left_score = cluster_score;
-                    left_candidate = cluster;
-                } else if (cluster_score < 0 && cluster_score < min_right_score) {
-                    min_right_score = cluster_score;
-                    right_candidate = cluster;
-                }
+        if (selected_clusters.size() == 1)
+        {
+            Eigen::Vector3f centroid(0.0, 0.0, 0.0);
+            pcl::PointIndices cluster = selected_clusters[0]; 
+            for (int idx : cluster.indices)
+            {
+                centroid[0] += white_cloud->points[idx].x;
+                centroid[1] += white_cloud->points[idx].y;
+                centroid[2] += white_cloud->points[idx].z;
             }
-        
-            // Assign detected clusters
-            if (max_left_score > -std::numeric_limits<float>::infinity()) {
-                leftmost_cluster = left_candidate;
+            centroid /= cluster.indices.size();  // Compute centroid
+    
+            float angle = atan2(centroid[1] - camera_position[1], centroid[0] - camera_position[0]);
+            
+            if (angle >= 0)  // Cluster is on the left side
+            {
+                leftmost_cluster = cluster;
+                left_observed = centroid.head<2>();
                 left_detected = true;
+                RCLCPP_INFO(this->get_logger(), "OI");
             }
-            if (min_right_score < std::numeric_limits<float>::infinity()) {
-                rightmost_cluster = right_candidate;
+            else  // Cluster is on the right side
+            {
+                rightmost_cluster = cluster;
+                right_observed = centroid.head<2>();
                 right_detected = true;
             }
-        
-            // Special case: if only one cluster found, still classify it properly
-            if (selected_clusters.size() == 1) {
-                if (left_detected && !right_detected) {
-                    RCLCPP_INFO(this->get_logger(), "Single cluster detected on left side");
-                } else if (!left_detected && right_detected) {
-                    RCLCPP_INFO(this->get_logger(), "Single cluster detected on right side");
+        }
+        else  // Standard case: multiple clusters
+        {
+            for (const auto& cluster : selected_clusters)
+            {
+                Eigen::Vector3f centroid(0.0, 0.0, 0.0);
+                for (int idx : cluster.indices)
+                {
+                    centroid[0] += white_cloud->points[idx].x;
+                    centroid[1] += white_cloud->points[idx].y;
+                    centroid[2] += white_cloud->points[idx].z;
+                }
+                centroid /= cluster.indices.size();  // Compute centroid
+            
+                // Compute relative angle to the camera
+                float angle = atan2(centroid[1] - camera_position[1], centroid[0] - camera_position[0]);
+            
+                if (angle > max_angle) 
+                {
+                    max_angle = angle;
+                    leftmost_cluster = cluster;
+                    left_observed = centroid.head<2>();
+                    left_detected = true;
+                }
+            
+                if (angle < min_angle) 
+                {
+                    min_angle = angle;
+                    rightmost_cluster = cluster;
+                    right_observed = centroid.head<2>();
+                    right_detected = true;
                 }
             }
         }
@@ -528,115 +506,101 @@ private:
         const pcl::PointIndices& left_cluster_indices,
         const pcl::PointIndices& right_cluster_indices,
         const pcl::PointCloud<pcl::PointXYZ>::Ptr white_cloud)
-        {
-            visualization_msgs::msg::MarkerArray marker_array;
-            
-            // 1. Get current camera pose and orientation
-            tf2::Quaternion q(
-                current_pose_.pose.orientation.x,
-                current_pose_.pose.orientation.y,
-                current_pose_.pose.orientation.z,
-                current_pose_.pose.orientation.w);
-            tf2::Matrix3x3 rot(q);
-            Eigen::Vector3f cam_pos(
-                current_pose_.pose.position.x,
-                current_pose_.pose.position.y,
-                current_pose_.pose.position.z);
-        
-            // Convert tf2::Matrix3x3 to Eigen::Matrix3f
-            Eigen::Matrix3f rot_eigen;
-            for(int i=0; i<3; i++) {
-                for(int j=0; j<3; j++) {
-                    rot_eigen(i,j) = rot[i][j];
-                }
-            }
-        
-            // 2. Extract camera-relative coefficients from state
-            Eigen::Vector3f left_coeffs(state[0], state[1], state[2]);  // a_L, b_L, c_L
-            Eigen::Vector3f right_coeffs(state[6], state[7], state[8]); // a_R, b_R, c_R
-        
-            // 3. Determine visualization range in camera X coordinates
-            auto getCameraXRange = [&](const pcl::PointIndices& indices) {
-                if (indices.indices.empty()) {
-                    return std::make_pair(-5.0f, 5.0f); // Default 10m forward
-                }
-        
+    {
+        visualization_msgs::msg::MarkerArray marker_array;
+        const float PADDING = 0.0f; // meters around clusters
+        const float DEFAULT_LENGTH = 10.0f; // meters
+    
+        // Extract coefficients from state vector
+        Eigen::Vector3f left_coeffs(state[0], state[1], state[2]);
+        Eigen::Vector3f right_coeffs(state[6], state[7], state[8]);
+    
+        // Calculate x-boundaries for a lane
+        auto calculateVisualizationRange = [&](bool this_detected, const pcl::PointIndices& this_indices, 
+                                            bool other_detected, const pcl::PointIndices& other_indices) {
+            if (this_detected && !this_indices.indices.empty()) {
+                // For detected lanes: use own cluster boundaries
                 float min_x = std::numeric_limits<float>::max();
                 float max_x = std::numeric_limits<float>::lowest();
-                
-                for (int idx : indices.indices) {
+                for (int idx : this_indices.indices) {
                     const auto& point = white_cloud->points[idx];
-                    Eigen::Vector3f pt_map(point.x, point.y, point.z);
-                    Eigen::Vector3f pt_cam = rot_eigen.transpose() * (pt_map - cam_pos);
-                    
-                    min_x = std::min(min_x, pt_cam.x());
-                    max_x = std::max(max_x, pt_cam.x());
+                    min_x = std::min(min_x, point.x);
+                    max_x = std::max(max_x, point.x);
                 }
-                return std::make_pair(min_x - 0.5f, max_x + 0.5f); // Add small padding
-            };
-        
-            auto [left_min_x, left_max_x] = getCameraXRange(left_cluster_indices);
-            auto [right_min_x, right_max_x] = getCameraXRange(right_cluster_indices);
-        
-            // 4. Create left lane marker (green for detected, blue for estimated)
-            visualization_msgs::msg::Marker left_marker;
-            left_marker.header.frame_id = "map";
-            left_marker.header.stamp = this->now();
-            left_marker.ns = "kalman_lanes";
-            left_marker.id = 0;
-            left_marker.type = visualization_msgs::msg::Marker::LINE_STRIP;
-            left_marker.action = visualization_msgs::msg::Marker::ADD;
-            left_marker.scale.x = 0.1; // Line width
-            left_marker.color.a = 1.0;
-            left_marker.color.g = left_detected ? 1.0 : 0.5;  // Green if detected
-            left_marker.color.b = left_detected ? 0.0 : 1.0;  // Blue if estimated
-            left_marker.pose.orientation.w = 1.0;
-        
-            // 5. Create right lane marker (red for detected, pink for estimated)
-            visualization_msgs::msg::Marker right_marker = left_marker;
-            right_marker.id = 1;
-            right_marker.color.r = 1.0;
-            right_marker.color.g = right_detected ? 0.0 : 0.5;
-            right_marker.color.b = right_detected ? 0.0 : 0.5;
-        
-            // 6. Generate points for left lane
-            const float step_size = 0.2f; // meters between points
-            for (float x_cam = left_min_x; x_cam <= left_max_x; x_cam += step_size) {
-                // Calculate y in camera frame
-                float y_cam = left_coeffs[0]*x_cam*x_cam + left_coeffs[1]*x_cam + left_coeffs[2];
-                
-                // Transform to map frame
-                Eigen::Vector3f p_cam(x_cam, y_cam, 0);
-                Eigen::Vector3f p_map = rot_eigen * p_cam + cam_pos;
-                
-                geometry_msgs::msg::Point p;
-                p.x = p_map.x();
-                p.y = p_map.y();
-                p.z = 0;
-                left_marker.points.push_back(p);
+                return std::make_pair(min_x - PADDING, max_x + PADDING);
             }
-        
-            // 7. Generate points for right lane
-            for (float x_cam = right_min_x; x_cam <= right_max_x; x_cam += step_size) {
-                // Calculate y in camera frame
-                float y_cam = right_coeffs[0]*x_cam*x_cam + right_coeffs[1]*x_cam + right_coeffs[2];
-                
-                // Transform to map frame
-                Eigen::Vector3f p_cam(x_cam, y_cam, 0);
-                Eigen::Vector3f p_map = rot_eigen * p_cam + cam_pos;
-                
-                geometry_msgs::msg::Point p;
-                p.x = p_map.x();
-                p.y = p_map.y();
-                p.z = 0;
-                right_marker.points.push_back(p);
+            else if (other_detected && !other_indices.indices.empty()) {
+                // For estimated lanes: use other lane's boundaries if available
+                float min_x = std::numeric_limits<float>::max();
+                float max_x = std::numeric_limits<float>::lowest();
+                for (int idx : other_indices.indices) {
+                    const auto& point = white_cloud->points[idx];
+                    min_x = std::min(min_x, point.x);
+                    max_x = std::max(max_x, point.x);
+                }
+                return std::make_pair(min_x - PADDING, max_x + PADDING);
             }
+            else {
+                // Default range around current position
+                float center_x = current_pose_.pose.position.x;
+                return std::make_pair(center_x - DEFAULT_LENGTH/2, center_x + DEFAULT_LENGTH/2);
+            }
+        };
+    
+        // Calculate ranges for both lanes
+        auto [left_min, left_max] = calculateVisualizationRange(
+            left_detected, left_cluster_indices,
+            right_detected, right_cluster_indices);
         
-            // 8. Add markers to array and publish
-            marker_array.markers.push_back(left_marker);
-            marker_array.markers.push_back(right_marker);
-            publisher->publish(marker_array);
+        auto [right_min, right_max] = calculateVisualizationRange(
+            right_detected, right_cluster_indices,
+            left_detected, left_cluster_indices);
+    
+        // Left lane marker (blue for detected, light blue for estimated)
+        visualization_msgs::msg::Marker left_marker;
+        left_marker.header.frame_id = "map";
+        left_marker.header.stamp = this->now();
+        left_marker.ns = "kalman_lanes";
+        left_marker.id = 0;
+        left_marker.type = visualization_msgs::msg::Marker::LINE_STRIP;
+        left_marker.action = visualization_msgs::msg::Marker::ADD;
+        left_marker.scale.x = 0.05;
+        left_marker.color.a = 1.0;
+        left_marker.color.b = 1.0;
+        left_marker.color.g = left_detected ? 0.0 : 0.5;
+        left_marker.pose.orientation.w = 1.0;
+    
+        // Right lane marker (red for detected, pink for estimated)
+        visualization_msgs::msg::Marker right_marker = left_marker;
+        right_marker.id = 1;
+        right_marker.color.r = 1.0;
+        right_marker.color.b = right_detected ? 0.0 : 0.5;
+        right_marker.color.g = 0.0;
+    
+        // Generate points for left curve (ALWAYS shown)
+        float left_step = (left_max - left_min) / 50.0f;
+        for (float x = left_min; x <= left_max; x += left_step) {
+            geometry_msgs::msg::Point p;
+            p.x = x;
+            p.y = left_coeffs[0]*x*x + left_coeffs[1]*x + left_coeffs[2];
+            p.z = 0;
+            left_marker.points.push_back(p);
         }
+        marker_array.markers.push_back(left_marker);
+    
+        // Generate points for right curve (ALWAYS shown)
+        float right_step = (right_max - right_min) / 50.0f;
+        for (float x = right_min; x <= right_max; x += right_step) {
+            geometry_msgs::msg::Point p;
+            p.x = x;
+            p.y = right_coeffs[0]*x*x + right_coeffs[1]*x + right_coeffs[2];
+            p.z = 0;
+            right_marker.points.push_back(p);
+        }
+        marker_array.markers.push_back(right_marker);
+    
+        publisher->publish(marker_array);
+    }
 
 
     Eigen::Vector3f calculateAndStoreTransform(const Eigen::Vector3f& left_coeffs_cam, 
@@ -663,7 +627,7 @@ private:
         
         std::vector<pcl::PointIndices> clusters;
         pcl::EuclideanClusterExtraction<pcl::PointXYZ> ec;
-        ec.setClusterTolerance(0.08);  // 8cm
+        ec.setClusterTolerance(0.07);  // 8cm
         ec.setMinClusterSize(200);     // Minimum points per cluster
         ec.setMaxClusterSize(5000);    // Maximum points per cluster
         ec.setSearchMethod(tree);
