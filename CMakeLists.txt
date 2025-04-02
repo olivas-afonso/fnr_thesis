@@ -320,6 +320,29 @@ target_link_libraries(motion_kalman
     ${PCL_LIBRARIES}
 )
 
+add_executable(frenet_motion src/frenet_motion.cpp)
+
+ament_target_dependencies(frenet_motion
+  rclcpp
+  std_msgs
+  sensor_msgs
+  pcl_ros
+  pcl_conversions
+  visualization_msgs
+  tf2
+  tf2_ros
+  tf2_sensor_msgs
+  tf2_geometry_msgs
+  
+)
+
+target_link_libraries(frenet_motion
+    ${OpenCV_LIBS}
+    tf2::tf2
+    tf2_ros::tf2_ros
+    ${PCL_LIBRARIES}
+)
+
 
 
 
@@ -341,6 +364,7 @@ install(TARGETS
   kalman_spline
   test_cluster_only
   motion_kalman
+  frenet_motion
   DESTINATION lib/${PROJECT_NAME}
 )
 

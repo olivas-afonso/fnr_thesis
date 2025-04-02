@@ -69,8 +69,13 @@ public:
         curve_publisher_right_ = this->create_publisher<visualization_msgs::msg::MarkerArray>("right_spline_fit_original", 10);
         curve_publisher_left_ = this->create_publisher<visualization_msgs::msg::MarkerArray>("left_spline_fit_original", 10);
         kalman_publisher_ = this->create_publisher<visualization_msgs::msg::MarkerArray>("kalman_state", 10);
+        middle_lane_ = this->create_publisher<visualization_msgs::msg::MarkerArray>("middle_lane", 10);
         cluster_marker_pub_ = this->create_publisher<visualization_msgs::msg::MarkerArray>("clusters", 10);
         test_cluster_marker_pub_ = this->create_publisher<visualization_msgs::msg::MarkerArray>("test_clusters", 10);
+
+        distance_orientation_pub_ = this->create_publisher<std_msgs::msg::Float32MultiArray>("distance_orientation", 10);
+        distance_marker_pub_ = this->create_publisher<visualization_msgs::msg::Marker>("distance_marker", 10);
+        orientation_marker_pub_ = this->create_publisher<visualization_msgs::msg::Marker>("orientation_marker", 10);
 
         tf_buffer_ = std::make_shared<tf2_ros::Buffer>(this->get_clock());
         tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_, this);
@@ -465,6 +470,139 @@ private:
         state = state + K * (Z - H * state);
         P = (I - K * H) * P;
 
+
+
+        Eigen::Vector3f middle_coeffs_cam;
+        if (fit_side_) {
+            // Use left curve shifted right
+            middle_coeffs_cam = shiftToMiddle(Eigen::Vector3f(state[0], state[1], state[2]), 
+                                lane_transform_, true);
+        } else {
+            // Use right curve shifted left
+            middle_coeffs_cam = shiftToMiddle(Eigen::Vector3f(state[6], state[7], state[8]), 
+                                lane_transform_, false);
+        }
+
+        // Get camera position and orientation for visualization
+        tf2::Quaternion q(
+            current_pose_.pose.orientation.x,
+            current_pose_.pose.orientation.y,
+            current_pose_.pose.orientation.z,
+            current_pose_.pose.orientation.w);
+        tf2::Matrix3x3 rot(q);
+        Eigen::Matrix3f rot_eigen;
+        for(int i=0; i<3; i++) {
+            for(int j=0; j<3; j++) {
+                rot_eigen(i,j) = rot[i][j];
+            }
+        }
+        Eigen::Vector3f cam_pos(
+            current_pose_.pose.position.x,
+            current_pose_.pose.position.y,
+            current_pose_.pose.position.z);
+
+        // Calculate reasonable bounds for middle lane visualization
+        float x_min_cam = 0.5f;  // Start 0.5m in front of camera
+        float x_max_cam = 3.0f;  // Extend 3.0m forward
+        
+        // Create middle lane marker
+        visualization_msgs::msg::MarkerArray middle_markers;
+        visualization_msgs::msg::Marker middle_marker;
+        middle_marker.header.frame_id = "map";
+        middle_marker.header.stamp = this->now();
+        middle_marker.ns = "middle_lane";
+        middle_marker.id = 0;
+        middle_marker.type = visualization_msgs::msg::Marker::LINE_STRIP;
+        middle_marker.action = visualization_msgs::msg::Marker::ADD;
+        middle_marker.scale.x = 0.05;  // Thicker line for better visibility
+        middle_marker.color.r = 1.0;
+        middle_marker.color.g = 1.0;
+        middle_marker.color.b = 0.0;  // Yellow color
+        middle_marker.color.a = 1.0;
+        middle_marker.pose.orientation.w = 1.0;
+
+        // Generate points for middle curve within the calculated bounds
+        for (float x_cam = x_min_cam; x_cam <= x_max_cam; x_cam += 0.1f) {
+            float y_cam = middle_coeffs_cam[0]*x_cam*x_cam + middle_coeffs_cam[1]*x_cam + middle_coeffs_cam[2];
+            Eigen::Vector3f p_cam(x_cam, y_cam, 0);
+            Eigen::Vector3f p_map = rot_eigen * p_cam + cam_pos;
+            
+            geometry_msgs::msg::Point p;
+            p.x = p_map.x();
+            p.y = p_map.y();
+            p.z = 0;
+            middle_marker.points.push_back(p);
+        }
+        middle_markers.markers.push_back(middle_marker);
+        middle_lane_->publish(middle_markers);
+
+        // Calculate distance and orientation
+        float distance = 0.0f;
+        float orientation_diff = 0.0f;
+        float min_distance = 0.5f;
+        float max_distance = 3.0f;
+
+        calculateDistanceAndOrientation(
+            middle_coeffs_cam,
+            cam_pos,
+            rot,
+            min_distance,
+            max_distance,
+            distance,
+            orientation_diff);
+
+        // Get yaw angle for orientation marker
+        double roll, pitch, yaw;
+        rot.getRPY(roll, pitch, yaw);
+
+        // Publish results
+        std_msgs::msg::Float32MultiArray distance_orientation_msg;
+        distance_orientation_msg.data.push_back(distance);
+        distance_orientation_msg.data.push_back(orientation_diff);
+        distance_orientation_pub_->publish(distance_orientation_msg);
+
+        // Publish distance visualization
+        visualization_msgs::msg::Marker distance_marker;
+        distance_marker.header.frame_id = "map";
+        distance_marker.header.stamp = this->now();
+        distance_marker.ns = "distance";
+        distance_marker.id = 0;
+        distance_marker.type = visualization_msgs::msg::Marker::TEXT_VIEW_FACING;
+        distance_marker.text = "D: " + std::to_string(distance).substr(0,4) + "m";
+        distance_marker.pose.position.x = current_pose_.pose.position.x;
+        distance_marker.pose.position.y = current_pose_.pose.position.y;
+        distance_marker.pose.position.z = current_pose_.pose.position.z + 0.5;
+        distance_marker.scale.z = 0.2; // Text height
+        distance_marker.color.a = 1.0;
+        distance_marker.color.r = 1.0;
+        distance_marker.color.g = 1.0;
+        distance_marker.color.b = 1.0;
+        distance_marker_pub_->publish(distance_marker);
+
+        // Publish orientation as text only
+        visualization_msgs::msg::Marker orientation_marker;
+        orientation_marker.header.frame_id = "map";
+        orientation_marker.header.stamp = this->now();
+        orientation_marker.ns = "orientation";
+        orientation_marker.id = 0;
+        orientation_marker.type = visualization_msgs::msg::Marker::TEXT_VIEW_FACING;
+        orientation_marker.text = "θ: " + std::to_string(orientation_diff * 180.0/M_PI).substr(0,4) + "°";
+        orientation_marker.pose.position.x = current_pose_.pose.position.x;
+        orientation_marker.pose.position.y = current_pose_.pose.position.y;
+        orientation_marker.pose.position.z = current_pose_.pose.position.z + 1.5; // Below distance text
+        orientation_marker.scale.z = 0.2; // Text height
+        orientation_marker.color.a = 1.0;
+        orientation_marker.color.r = 1.0;
+        orientation_marker.color.g = 1.0;
+        orientation_marker.color.b = 1.0;
+        orientation_marker_pub_->publish(orientation_marker);
+
+        // Modify the curve visualization to limit its length:
+        // Replace the visualization range calculation with:
+
+
+
+
         visualizeKalmanState(
             state,               // Your 12D Kalman state vector
             kalman_publisher_,    // Your marker publisher
@@ -785,6 +923,120 @@ private:
         return right_coeffs_cam - left_coeffs_cam;
     }
 
+    
+    
+    Eigen::Vector3f shiftToMiddle(const Eigen::Vector3f& coeffs, 
+        const Eigen::Vector3f& lane_transform, 
+        bool is_left) 
+    {
+        if (is_left) {
+            // Shift right by half the lane width
+            return Eigen::Vector3f(
+            coeffs[0],  // a stays same (curvature)
+            coeffs[1],  // b stays same (linear term)
+            coeffs[2] + lane_transform[2]/2.0f  // Offset c by half lane width
+            );
+        } else {
+            // Shift left by half the lane width
+            return Eigen::Vector3f(
+            coeffs[0],  // a stays same
+            coeffs[1],  // b stays same
+            coeffs[2] - lane_transform[2]/2.0f  // Offset c by half lane width
+            );
+        }
+    }
+
+    void calculateDistanceAndOrientation(
+        const Eigen::Vector3f& middle_coeffs_cam,
+        const Eigen::Vector3f& camera_pos,
+        const tf2::Matrix3x3& rotation_matrix,
+        float min_distance,
+        float max_distance,
+        float& distance,
+        float& orientation_diff) 
+    {
+        // Convert camera orientation to Eigen matrix
+        Eigen::Matrix3f rot_eigen;
+        for(int i=0; i<3; i++) {
+            for(int j=0; j<3; j++) {
+                rot_eigen(i,j) = rotation_matrix[i][j];
+            }
+        }
+    
+        const float a = middle_coeffs_cam[0];
+        const float b = middle_coeffs_cam[1];
+        const float c = middle_coeffs_cam[2];
+        
+        // Search only within our distance bounds (camera frame)
+        float x_min = min_distance;
+        float x_max = max_distance;
+        
+        // Sample points along curve to find closest in bounded region
+        const int num_samples = 20;
+        float min_dist_sq = std::numeric_limits<float>::max();
+        float best_x = 0.0f;
+        
+        for (int i = 0; i <= num_samples; ++i) {
+            float x = x_min + (x_max - x_min) * (i / float(num_samples));
+            float y = a*x*x + b*x + c;
+            float dist_sq = x*x + y*y;  // Distance squared from camera (0,0)
+            
+            if (dist_sq < min_dist_sq) {
+                min_dist_sq = dist_sq;
+                best_x = x;
+            }
+        }
+        
+        // Refine with Newton-Raphson around the best point
+        float x = best_x;
+        const float tolerance = 1e-5f;
+        const int max_iterations = 10;
+        
+        for (int i = 0; i < max_iterations; ++i) {
+            float y = a*x*x + b*x + c;
+            float dy_dx = 2*a*x + b;
+            
+            float f = 2*x + 2*y*dy_dx;
+            float df_dx = 2 + 2*(dy_dx*dy_dx + y*2*a);
+            
+            float delta = f / df_dx;
+            x -= delta;
+            
+            // Clamp to our search region
+            x = std::max(x_min, std::min(x_max, x));
+            
+            if (std::abs(delta) < tolerance) {
+                break;
+            }
+        }
+        
+        // Calculate final closest point
+        float y = a*x*x + b*x + c;
+        Eigen::Vector3f closest_pt_cam(x, y, 0);
+        
+        // Transform back to map frame
+        Eigen::Vector3f closest_pt_map = rot_eigen * closest_pt_cam + camera_pos;
+        
+        // Calculate distance in map frame
+        distance = (closest_pt_map - camera_pos).norm();
+        
+        // Calculate tangent at closest point (in camera frame)
+        float tangent_slope = 2*a*x + b;
+        float curve_angle = atan2(tangent_slope, 1.0f); // Use atan2 for proper quadrant
+        
+        // Get camera yaw angle (in camera frame, looking along +X)
+        double roll, pitch, yaw;
+        rotation_matrix.getRPY(roll, pitch, yaw);
+        
+        // Calculate orientation difference (curve_angle is relative to camera's +X axis)
+        // Positive when curve turns right (relative to camera), negative when left
+        orientation_diff = curve_angle;
+        
+        // Normalize to [-π, π]
+        while (orientation_diff > M_PI) orientation_diff -= 2*M_PI;
+        while (orientation_diff < -M_PI) orientation_diff += 2*M_PI;
+    }
+    
     std::vector<pcl::PointIndices> clusterWhitePoints(
         pcl::PointCloud<pcl::PointXYZ>::Ptr cloud,
         const geometry_msgs::msg::Pose &current_pose_)
@@ -1051,16 +1303,21 @@ private:
 
 
 
+    rclcpp::Publisher<std_msgs::msg::Float32MultiArray>::SharedPtr distance_orientation_pub_;
 
     rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr white_publisher_;
     //rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr distance_orientation_marker_pub_;
     rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr curve_publisher_left_;
     rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr curve_publisher_right_;
     rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr kalman_publisher_;
+    rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr middle_lane_;
     //rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr marker_publisher2_;
     rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr cluster_marker_pub_;
     rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr test_cluster_marker_pub_;
     rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr marker_pub_;
+    rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr distance_marker_pub_;
+    rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr orientation_marker_pub_;
+
 
 
     rclcpp::Parameter fit_side_param_;
