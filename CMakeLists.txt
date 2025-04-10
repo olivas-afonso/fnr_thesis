@@ -24,11 +24,20 @@ find_package(std_msgs REQUIRED)
 
 
 find_package(PCL REQUIRED COMPONENTS common io surface)
+find_package(PCL 1.12 REQUIRED COMPONENTS common segmentation filters)
+
+
 
 include_directories(
+  include
   ${PCL_INCLUDE_DIRS}
   /usr/include/pcl-1.12
-  )
+  ${Eigen3_INCLUDE_DIRS}
+  ${PCL_INCLUDE_DIRS}
+  ${OpenCV_INCLUDE_DIRS}
+)
+
+
 link_directories(
   ${PCL_LIBRARY_DIRS}
   ${OpenCV_INCLUDE_DIRS}
@@ -40,6 +49,34 @@ add_definitions(${PCL_DEFINITIONS})
 include_directories(
   ${OpenCV_INCLUDE_DIRS}
   /opt/ros/humble/include  # Ensures ROS2 headers are included
+)
+
+
+
+add_executable(kalman_rel_localization
+  src/kalman_rel_localization.cpp
+  src/utilities.cpp
+  src/visualization.cpp
+)
+
+
+ament_target_dependencies(kalman_rel_localization
+  rclcpp
+  sensor_msgs
+  geometry_msgs
+  visualization_msgs
+  std_msgs
+  tf2_ros
+  tf2_geometry_msgs
+  pcl_conversions
+)
+
+target_link_libraries(kalman_rel_localization
+  ${PCL_LIBRARIES}
+  ${OpenCV_LIBS}
+  Eigen3::Eigen
+  tf2::tf2
+  tf2_ros::tf2_ros
 )
 
 
@@ -56,269 +93,150 @@ ament_target_dependencies(point_cloud_processor
 )
 
 # Add Ground Plane Processor Node
-add_executable(ground_plane_processor src/ground_plane_processor.cpp)
+#add_executable(ground_plane_processor src/ground_plane_processor.cpp)
 
-ament_target_dependencies(ground_plane_processor
-  rclcpp
-  std_msgs
-  sensor_msgs
-  pcl_ros
-  pcl_conversions
-)
+#ament_target_dependencies(ground_plane_processor
+#  rclcpp
+#  std_msgs
+#  sensor_msgs
+#  pcl_ros
+#  pcl_conversions
+#)
 
-add_executable(joined_processor src/joined_processor.cpp)
+#add_executable(joined_processor src/joined_processor.cpp)
 
-ament_target_dependencies(joined_processor
-  rclcpp
-  std_msgs
-  sensor_msgs
-  pcl_ros
-  pcl_conversions
-)
+#ament_target_dependencies(joined_processor
+#  rclcpp
+#  std_msgs
+#  sensor_msgs
+#  pcl_ros
+#  pcl_conversions
+#)
 
-add_executable(obstacle_detector src/obstacle_detector.cpp)
+#add_executable(obstacle_detector src/obstacle_detector.cpp)
 
 # Link OpenCV libraries to the obstacle_detector executable
-target_link_libraries(obstacle_detector ${OpenCV_LIBS})
+#target_link_libraries(obstacle_detector ${OpenCV_LIBS})
 
 
-ament_target_dependencies(obstacle_detector
-  rclcpp
-  std_msgs
-  sensor_msgs
-  pcl_ros
-  pcl_conversions
-)
+#ament_target_dependencies(obstacle_detector
+#  rclcpp
+#  std_msgs
+#  sensor_msgs
+#  pcl_ros
+#  pcl_conversions
+#)#
 
-add_executable(rel_localization src/rel_localization_processor.cpp)
+#add_executable(rel_localization src/rel_localization_processor.cpp)
 
-ament_target_dependencies(rel_localization
-  rclcpp
-  std_msgs
-  sensor_msgs
-  pcl_ros
-  pcl_conversions
-  visualization_msgs
-  tf2
-  tf2_ros
-  tf2_sensor_msgs
+#ament_target_dependencies(rel_localization
+#  rclcpp
+#  std_msgs
+#  sensor_msgs
+#  pcl_ros
+#  pcl_conversions
+#  visualization_msgs
+#  tf2
+#  tf2_ros
+#  tf2_sensor_msgs
   
-)
+#)
 
-target_link_libraries(rel_localization
-    ${OpenCV_LIBS}
-    tf2::tf2
-    tf2_ros::tf2_ros
+#target_link_libraries(rel_localization
+#    ${OpenCV_LIBS}
+#    tf2::tf2
+#    tf2_ros::tf2_ros
       # Ensure this is linked correctly
-)
+#)
 
-add_executable(duarte_init src/duarte_init.cpp)
+#add_executable(duarte_init src/duarte_init.cpp)
 
-ament_target_dependencies(duarte_init rclcpp visualization_msgs)
+#ament_target_dependencies(duarte_init rclcpp visualization_msgs)
 
-add_executable(kalman_rel src/kalman_rel_localization.cpp)
 
-ament_target_dependencies(kalman_rel
-  rclcpp
-  std_msgs
-  sensor_msgs
-  pcl_ros
-  pcl_conversions
-  visualization_msgs
-  tf2
-  tf2_ros
-  tf2_sensor_msgs
+#add_executable(circle_kalman src/kalman_circle_localization.cpp)
+
+#ament_target_dependencies(circle_kalman
+#  rclcpp
+#  std_msgs
+#  sensor_msgs
+#  pcl_ros
+#  pcl_conversions
+#  visualization_msgs
+#  tf2
+#  tf2_ros
+#  tf2_sensor_msgs
   
-)
+#)
 
-target_link_libraries(kalman_rel
-    ${OpenCV_LIBS}
-    tf2::tf2
-    tf2_ros::tf2_ros
+#target_link_libraries(circle_kalman
+#    ${OpenCV_LIBS}
+#    tf2::tf2
+#    tf2_ros::tf2_ros
       # Ensure this is linked correctly
-)
+#)
 
-add_executable(circle_kalman src/kalman_circle_localization.cpp)
+#add_executable(test_cluster src/cluster_test.cpp)
 
-ament_target_dependencies(circle_kalman
-  rclcpp
-  std_msgs
-  sensor_msgs
-  pcl_ros
-  pcl_conversions
-  visualization_msgs
-  tf2
-  tf2_ros
-  tf2_sensor_msgs
+#ament_target_dependencies(test_cluster
+#  rclcpp
+#  std_msgs
+#  sensor_msgs
+#  pcl_ros
+#  pcl_conversions
+#  visualization_msgs
+#  tf2
+#  tf2_ros
+#  tf2_sensor_msgs
   
-)
+#)
 
-target_link_libraries(circle_kalman
-    ${OpenCV_LIBS}
-    tf2::tf2
-    tf2_ros::tf2_ros
+#target_link_libraries(test_cluster
+#    ${OpenCV_LIBS}
+#    tf2::tf2
+#    tf2_ros::tf2_ros
       # Ensure this is linked correctly
-)
+#)
 
-add_executable(test_cluster src/cluster_test.cpp)
+#add_executable(same_center src/same_center.cpp)
 
-ament_target_dependencies(test_cluster
-  rclcpp
-  std_msgs
-  sensor_msgs
-  pcl_ros
-  pcl_conversions
-  visualization_msgs
-  tf2
-  tf2_ros
-  tf2_sensor_msgs
-  
-)
+#ament_target_dependencies(same_center
+#  rclcpp
+#  std_msgs
+#  sensor_msgs
+#  pcl_ros
+#  pcl_conversions
+#  visualization_msgs
+#  tf2
+#  tf2_ros
+#  tf2_sensor_msgs
 
-target_link_libraries(test_cluster
-    ${OpenCV_LIBS}
-    tf2::tf2
-    tf2_ros::tf2_ros
-      # Ensure this is linked correctly
-)
+#)
 
-add_executable(same_center src/same_center.cpp)
-
-ament_target_dependencies(same_center
-  rclcpp
-  std_msgs
-  sensor_msgs
-  pcl_ros
-  pcl_conversions
-  visualization_msgs
-  tf2
-  tf2_ros
-  tf2_sensor_msgs
-
-)
-
-target_link_libraries(same_center
-    ${OpenCV_LIBS}
-    tf2::tf2
-    tf2_ros::tf2_ros
+#target_link_libraries(same_center
+#    ${OpenCV_LIBS}
+#    tf2::tf2
+#    tf2_ros::tf2_ros
 
       # Ensure this is linked correctly
-)
+#)
 
-add_executable(skeleton_spline src/skeleton_spline.cpp)
+#add_executable(skeleton_spline src/skeleton_spline.cpp)
 
-ament_target_dependencies(skeleton_spline
-  rclcpp
-  std_msgs
-  sensor_msgs
-  pcl_ros
-  pcl_conversions
-  visualization_msgs
-  tf2
-  tf2_ros
-  tf2_sensor_msgs
+#ament_target_dependencies(skeleton_spline
+#  rclcpp
+#  std_msgs
+#  sensor_msgs
+#  pcl_ros
+#  pcl_conversions
+#  visualization_msgs
+#  tf2
+#  tf2_ros
+#  tf2_sensor_msgs
   
-)
-
-target_link_libraries(skeleton_spline
-    ${OpenCV_LIBS}
-    tf2::tf2
-    tf2_ros::tf2_ros
-    ${PCL_LIBRARIES}
-)
+#)
 
 
-add_executable(spline_only src/spline_only.cpp)
-
-ament_target_dependencies(spline_only
-  rclcpp
-  std_msgs
-  sensor_msgs
-  pcl_ros
-  pcl_conversions
-  visualization_msgs
-  tf2
-  tf2_ros
-  tf2_sensor_msgs
-  
-)
-
-target_link_libraries(spline_only
-    ${OpenCV_LIBS}
-    tf2::tf2
-    tf2_ros::tf2_ros
-    ${PCL_LIBRARIES}
-)
-
-add_executable(kalman_spline src/kalman_spline.cpp)
-
-ament_target_dependencies(kalman_spline
-  rclcpp
-  std_msgs
-  sensor_msgs
-  pcl_ros
-  pcl_conversions
-  visualization_msgs
-  tf2
-  tf2_ros
-  tf2_sensor_msgs
-  tf2_geometry_msgs
-  
-)
-
-target_link_libraries(kalman_spline
-    ${OpenCV_LIBS}
-    tf2::tf2
-    tf2_ros::tf2_ros
-    ${PCL_LIBRARIES}
-)
-
-add_executable(test_cluster_only src/test_cluster_only.cpp)
-
-ament_target_dependencies(test_cluster_only
-  rclcpp
-  std_msgs
-  sensor_msgs
-  pcl_ros
-  pcl_conversions
-  visualization_msgs
-  tf2
-  tf2_ros
-  tf2_sensor_msgs
-  tf2_geometry_msgs
-  
-)
-
-target_link_libraries(test_cluster_only
-    ${OpenCV_LIBS}
-    tf2::tf2
-    tf2_ros::tf2_ros
-    ${PCL_LIBRARIES}
-)
-
-
-add_executable(motion_kalman src/motion_kalman_attempt.cpp)
-
-ament_target_dependencies(motion_kalman
-  rclcpp
-  std_msgs
-  sensor_msgs
-  pcl_ros
-  pcl_conversions
-  visualization_msgs
-  tf2
-  tf2_ros
-  tf2_sensor_msgs
-  tf2_geometry_msgs
-  
-)
-
-target_link_libraries(motion_kalman
-    ${OpenCV_LIBS}
-    tf2::tf2
-    tf2_ros::tf2_ros
-    ${PCL_LIBRARIES}
-)
 
 add_executable(frenet_motion src/frenet_motion.cpp)
 
@@ -350,21 +268,8 @@ target_link_libraries(frenet_motion
 
 install(TARGETS
   point_cloud_processor
-  ground_plane_processor
-  joined_processor
-  obstacle_detector
-  rel_localization
-  duarte_init
-  kalman_rel
-  circle_kalman
-  test_cluster
-  same_center
-  skeleton_spline
-  spline_only
-  kalman_spline
-  test_cluster_only
-  motion_kalman
   frenet_motion
+  kalman_rel_localization
   DESTINATION lib/${PROJECT_NAME}
 )
 
