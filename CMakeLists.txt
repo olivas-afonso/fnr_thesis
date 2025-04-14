@@ -17,10 +17,12 @@ find_package(visualization_msgs REQUIRED)
 find_package(tf2 REQUIRED)
 find_package(tf2_ros REQUIRED)
 find_package(tf2_sensor_msgs REQUIRED)
-find_package(OpenCV REQUIRED)
 find_package(GSL REQUIRED)
+find_package(OpenCV REQUIRED)
 find_package(tf2_geometry_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
+find_package(draco REQUIRED)
+find_package(point_cloud_interfaces REQUIRED)
 
 
 find_package(PCL REQUIRED COMPONENTS common io surface)
@@ -261,6 +263,31 @@ target_link_libraries(frenet_motion
     ${PCL_LIBRARIES}
 )
 
+add_executable(test_compression src/test_compression.cpp)
+
+ament_target_dependencies(test_compression
+  rclcpp
+  std_msgs
+  sensor_msgs
+  pcl_ros
+  pcl_conversions
+  visualization_msgs
+  tf2
+  tf2_ros
+  tf2_sensor_msgs
+  tf2_geometry_msgs
+  point_cloud_interfaces
+  
+)
+
+target_link_libraries(test_compression
+    ${OpenCV_LIBS}
+    tf2::tf2
+    tf2_ros::tf2_ros
+    ${PCL_LIBRARIES}
+    draco::draco
+)
+
 
 
 
@@ -270,6 +297,7 @@ install(TARGETS
   point_cloud_processor
   frenet_motion
   kalman_rel_localization
+  test_compression
   DESTINATION lib/${PROJECT_NAME}
 )
 
