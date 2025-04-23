@@ -21,6 +21,14 @@
   <depend>tf2_sensor_msgs</depend>
   <depend>tf2_geometry_msgs</depend>
 
+  <depend>nav2_msgs</depend>
+
+  <depend>nav2_map_server</depend>
+  <depend>nav2_amcl</depend>
+  <depend>nav2_lifecycle_manager</depend>
+  <depend>launch</depend>
+  <depend>launch_ros</depend>
+
 
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>

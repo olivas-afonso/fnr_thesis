@@ -52,49 +52,33 @@ KalmanRelLocalization::KalmanRelLocalization()
 
     // Add this at the beginning of the constructor
 
-    this->declare_parameter("time_jump_threshold", 1.0);
+    this->declare_parameter("time_jump_threshold", 5.0); // Increased from 1.0 to 5.0
     this->get_parameter("time_jump_threshold", time_jump_threshold_);
 
-    // Initialize state [a_L, b_L, c_L, ȧ_L, ḃ_L, ċ_L, a_R, b_R, c_R, ȧ_R, ḃ_R, ċ_R]
-    state = Eigen::VectorXf::Zero(12);
-    state << 0.01, 0.0, 0.0, 0.0, 0.0, 0.0,   // Left lane (slight initial curvature)
-     0.01, 0.0, 1.4, 0.0, 0.0, 0.0;  // Right lane (1.4m offset)
+    // Initialize state [a_L, b_L, c_L, a_R, b_R, c_R]
+    state = Eigen::VectorXf::Zero(6);
+    state << 0.00, 0.0, 0.7,   // Left lane
+         0.00, 0.0, -0.7;    // Right lane
 
 
-    // Initialize covariance matrix
-    P = Eigen::MatrixXf::Identity(12,12) * 0.1;
-    P.block(0,0,3,3) *= 0.1f;  // Higher confidence in a,b,c
-    P.block(6,6,3,3) *= 0.1f;
-    P.block(3,3,3,3) *= 1.0f;  // Higher uncertainty for derivatives
-    P.block(9,9,3,3) *= 1.0f;
+    // Covariance matrix (6x6)
+    P = Eigen::MatrixXf::Identity(6,6) * 0.1;
+
 
     // Process noise
-    Q = Eigen::MatrixXf::Identity(12,12) * 0.05;  // Increased base from 0.01
-    Q.block(0,0,3,3) *= 0.01f;  // a,b,c process noise (slightly higher)
-    Q.block(6,6,3,3) *= 0.01f;
-    Q.block(3,3,3,3) *= 0.1f;   // Derivative process noise (10x higher)
-    Q.block(9,9,3,3) *= 0.1f;
+    Q = Eigen::MatrixXf::Identity(6,6) * 0.01;
             
     //Measurement noise
     R = Eigen::MatrixXf::Identity(6,6) * 0.01;  // For full observation case
-    I = Eigen::MatrixXf::Identity(12,12);
+    I = Eigen::MatrixXf::Identity(6,6);
 
     // State transition model with coupling between lanes
-    F = Eigen::MatrixXf::Identity(12,12);
-    float dt = 0.1; // Time step
-    // Left lane dynamics
-    F(0,3) = dt; F(1,4) = dt; F(2,5) = dt;
-    // Right lane dynamics
-    F(6,9) = dt; F(7,10) = dt; F(8,11) = dt;
-    // Coupling terms (left-right influence)
-    F.block(0,6,3,3) = 0.05 * Eigen::Matrix3f::Identity();
-    F.block(6,0,3,3) = 0.05 * Eigen::Matrix3f::Identity();
+    F = Eigen::MatrixXf::Identity(6,6);
 
 
     // Measurement matrix - can observe up to 6 values (both lanes)
-    H_full = Eigen::MatrixXf::Zero(6,12);
-    H_full.block(0,0,3,3) = Eigen::Matrix3f::Identity();  // Left coeffs
-    H_full.block(3,6,3,3) = Eigen::Matrix3f::Identity();  // Right coeffs
+    H_full = Eigen::MatrixXf::Identity(6,6);
+
     
         // In constructor:
     last_speed_time_ = this->now();
@@ -127,36 +111,47 @@ void KalmanRelLocalization::pointCloudCallback(const sensor_msgs::msg::PointClou
     float dt;
 
     if (first_update_) {
-        dt = 1.0/30.0;
+        dt = 1.0/30.0; // Default for first update
         first_update_ = false;
     } else {
-        // Add check for valid timestamps
+        // Handle invalid timestamps
         if (last_update_time_.nanoseconds() == 0 || current_time.nanoseconds() == 0) {
             dt = 1.0/30.0;
-        } else {
+            RCLCPP_WARN(this->get_logger(), "Invalid timestamp detected, using dt=%.3f", dt);
+        } 
+        else {
             dt = (current_time - last_update_time_).seconds();
             
             // Handle time jumps
             if (current_time < last_update_time_) {
                 if ((last_update_time_ - current_time).seconds() > time_jump_threshold_) {
-                    RCLCPP_INFO(this->get_logger(), "Significant time jump detected (%.3fs), resetting filter", 
-                            (last_update_time_ - current_time).seconds());
+                    RCLCPP_WARN(this->get_logger(), 
+                        "Significant time jump detected (%.3fs), resetting filter", 
+                        (last_update_time_ - current_time).seconds());
                     initializeFilter();
                     dt = 1.0/30.0;
                 } else {
+                    // Small time fluctuation - use last valid dt
+                    dt = last_valid_dt_;
                     RCLCPP_DEBUG(this->get_logger(), 
-                                "Minor timestamp fluctuation (%.3fs), ignoring",
-                                (last_update_time_ - current_time).seconds());
-                    dt = 0.001;
+                        "Minor timestamp fluctuation, using last valid dt=%.3f", dt);
                 }
             }
             
-            if (dt <= 0 || dt > 0.5) {
-                dt = 0.1;
-                RCLCPP_WARN(this->get_logger(), "Invalid dt=%.3f, using default", dt);
+            // Validate dt range
+            const float MIN_DT = 0.001f; // 1ms
+            const float MAX_DT = 1.0f;   // 1 second (increased from 0.5)
+            
+            if (dt <= MIN_DT || dt > MAX_DT) {
+                dt = std::clamp(dt, MIN_DT, MAX_DT);
+                RCLCPP_WARN(this->get_logger(), 
+                    "Clamping dt=%.3f to [%.3f, %.3f]", 
+                    dt, MIN_DT, MAX_DT);
             }
         }
     }
+    
+    last_valid_dt_ = dt; // Store for future use
     last_update_time_ = current_time;
 
     // Add this check for control commands (NEW)
@@ -191,6 +186,9 @@ void KalmanRelLocalization::pointCloudCallback(const sensor_msgs::msg::PointClou
     }
 
     std::vector<pcl::PointIndices> selected_clusters = clusterWhitePoints(white_cloud, current_pose_.pose);
+    for (size_t i = 0; i < selected_clusters.size(); ++i) {
+        RCLCPP_INFO(this->get_logger(), "Cluster %zu has %zu points", i, selected_clusters[i].indices.size());
+    }
     publishClusterMarkers(white_cloud, selected_clusters, current_pose_.pose, cluster_marker_pub_, current_time);
 
     sensor_msgs::msg::PointCloud2 white_msg;
@@ -302,32 +300,27 @@ void KalmanRelLocalization::pointCloudCallback(const sensor_msgs::msg::PointClou
         Eigen::MatrixXf H;
         Eigen::MatrixXf R_current;
         Eigen::Vector3f coeffs_right, coeffs_left;
-        
-        if (left_detected && right_detected) {
-            
-            
+        bool has_observation = false;
 
+        if (left_detected && right_detected) {
             pcl::PointCloud<pcl::PointXYZ>::Ptr right_cluster(new pcl::PointCloud<pcl::PointXYZ>());
             pcl::copyPointCloud(*white_cloud, rightmost_cluster, *right_cluster);
-            coeffs_right=fitQuadraticCurve(right_cluster, curve_publisher_right_, current_pose_.pose, current_time);
+            coeffs_right = fitQuadraticCurve(right_cluster, curve_publisher_right_, current_pose_.pose, current_time);
 
             pcl::PointCloud<pcl::PointXYZ>::Ptr left_cluster(new pcl::PointCloud<pcl::PointXYZ>());
             pcl::copyPointCloud(*white_cloud, leftmost_cluster, *left_cluster);
-            coeffs_left=fitQuadraticCurve(left_cluster, curve_publisher_left_, current_pose_.pose, current_time);
+            coeffs_left = fitQuadraticCurve(left_cluster, curve_publisher_left_, current_pose_.pose, current_time);
 
             lane_transform_ = calculateAndStoreTransform(coeffs_left, coeffs_right);
 
             Z.resize(6);
-
             Z << coeffs_left(0), coeffs_left(1), coeffs_left(2),
                 coeffs_right(0), coeffs_right(1), coeffs_right(2);
             H = H_full;
             R_current = R;
-
-
-        
-        } else if (left_detected) {
-            // Only left cluster detected: fit a single  to the left cluster
+            has_observation = true;
+        } 
+        else if (left_detected) {
             pcl::PointCloud<pcl::PointXYZ>::Ptr left_cluster(new pcl::PointCloud<pcl::PointXYZ>());
             pcl::copyPointCloud(*white_cloud, leftmost_cluster, *left_cluster);
             Eigen::Vector3f coeffs_left = fitQuadraticCurve(left_cluster, curve_publisher_left_, current_pose_.pose, current_time);
@@ -339,51 +332,52 @@ void KalmanRelLocalization::pointCloudCallback(const sensor_msgs::msg::PointClou
             H = H_full;
             R_current = R;
             R_current.block(3,3,3,3) *= 2.0; // Higher uncertainty for estimated right lane
+            if(fit_side_)
+            has_observation = true;
         }
-
         else if (right_detected) {
-            // Only right lane visible - estimate left lane
             pcl::PointCloud<pcl::PointXYZ>::Ptr right_cluster(new pcl::PointCloud<pcl::PointXYZ>());
             pcl::copyPointCloud(*white_cloud, rightmost_cluster, *right_cluster);
-            Eigen::Vector3f coeffs_right = fitQuadraticCurve(right_cluster,curve_publisher_right_, current_pose_.pose, current_time);
+            Eigen::Vector3f coeffs_right = fitQuadraticCurve(right_cluster, curve_publisher_right_, current_pose_.pose, current_time);
             Eigen::Vector3f coeffs_left = estimateLeftFromRight(coeffs_right, lane_transform_);
-        
+
             Z.resize(6);
             Z << coeffs_left(0), coeffs_left(1), coeffs_left(2),
-                 coeffs_right(0), coeffs_right(1), coeffs_right(2);
+                coeffs_right(0), coeffs_right(1), coeffs_right(2);
             H = H_full;
             R_current = R;
             R_current.block(0,0,3,3) *= 2.0; // Higher uncertainty for estimated left lane
-        }
-            
-        else
-        {
-            return;
+            if(!fit_side_)
+            has_observation = true;
         }
 
-        // Kalman Prediction Step
+        // Kalman Prediction Step (always performed)
         predictionStep(current_time, dt);
 
+        // Kalman Update Step (only if we have observations)
+        if (has_observation) {
+            Eigen::MatrixXf S = H * P * H.transpose() + R_current;
+            Eigen::MatrixXf K = P * H.transpose() * S.inverse();
+            
+            state = state + K * (Z - H * state);
+            P = (I - K * H) * P;
+        }
 
-        // Kalman Update Step
-        Eigen::MatrixXf S = H * P * H.transpose() + R_current;
-        Eigen::MatrixXf K = P * H.transpose() * S.inverse();
-
-        
-        state = state + K * (Z - H * state);
-        P = (I - K * H) * P;
-
-
-
+        // Always update visualization and middle line
         Eigen::Vector3f middle_coeffs_cam;
         if (fit_side_) {
-            // Use left curve shifted right
             middle_coeffs_cam = shiftToMiddle(Eigen::Vector3f(state[0], state[1], state[2]), 
                                 lane_transform_, true);
         } else {
-            // Use right curve shifted left
-            middle_coeffs_cam = shiftToMiddle(Eigen::Vector3f(state[6], state[7], state[8]), 
+            middle_coeffs_cam = shiftToMiddle(Eigen::Vector3f(state[3], state[4], state[5]), 
                                 lane_transform_, false);
+        }
+
+        // Force middle lane to be straight (a=0, b=0) at initialization
+        if (first_update_) {
+            middle_coeffs_cam[0] = 0.0;  // a
+            middle_coeffs_cam[1] = 0.0;  // b
+            // c should already be properly positioned
         }
 
         // Get camera position and orientation for visualization
@@ -404,10 +398,6 @@ void KalmanRelLocalization::pointCloudCallback(const sensor_msgs::msg::PointClou
             current_pose_.pose.position.y,
             current_pose_.pose.position.z);
 
-        // Calculate reasonable bounds for middle lane visualization
-        float x_min_cam = 0.5f;  // Start 0.5m in front of camera
-        float x_max_cam = 3.0f;  // Extend 3.0m forward
-        
         // Create middle lane marker
         visualization_msgs::msg::MarkerArray middle_markers;
         visualization_msgs::msg::Marker middle_marker;
@@ -417,14 +407,16 @@ void KalmanRelLocalization::pointCloudCallback(const sensor_msgs::msg::PointClou
         middle_marker.id = 0;
         middle_marker.type = visualization_msgs::msg::Marker::LINE_STRIP;
         middle_marker.action = visualization_msgs::msg::Marker::ADD;
-        middle_marker.scale.x = 0.05;  // Thicker line for better visibility
+        middle_marker.scale.x = 0.05;
         middle_marker.color.r = 1.0;
         middle_marker.color.g = 1.0;
-        middle_marker.color.b = 0.0;  // Yellow color
-        middle_marker.color.a = 1.0;
+        middle_marker.color.b = 0.0;
+        middle_marker.color.a = has_observation ? 1.0 : 0.5; // Faded when predicted only
         middle_marker.pose.orientation.w = 1.0;
 
-        // Generate points for middle curve within the calculated bounds
+        // Generate points for middle curve
+        float x_min_cam = 0.5f;
+        float x_max_cam = 3.0f;
         for (float x_cam = x_min_cam; x_cam <= x_max_cam; x_cam += 0.1f) {
             float y_cam = middle_coeffs_cam[0]*x_cam*x_cam + middle_coeffs_cam[1]*x_cam + middle_coeffs_cam[2];
             Eigen::Vector3f p_cam(x_cam, y_cam, 0);
@@ -454,57 +446,18 @@ void KalmanRelLocalization::pointCloudCallback(const sensor_msgs::msg::PointClou
             distance,
             orientation_diff);
 
-        // Get yaw angle for orientation marker
-        double roll, pitch, yaw;
-        rot.getRPY(roll, pitch, yaw);
-
         // Publish results
         std_msgs::msg::Float32MultiArray distance_orientation_msg;
         distance_orientation_msg.data.push_back(distance);
         distance_orientation_msg.data.push_back(orientation_diff);
         distance_orientation_pub_->publish(distance_orientation_msg);
 
-        // Publish distance visualization
-        visualization_msgs::msg::Marker distance_marker;
-        distance_marker.header.frame_id = "map";
-        distance_marker.header.stamp = this->now();
-        distance_marker.ns = "distance";
-        distance_marker.id = 0;
-        distance_marker.type = visualization_msgs::msg::Marker::TEXT_VIEW_FACING;
-        distance_marker.text = "D: " + std::to_string(distance).substr(0,4) + "m";
-        distance_marker.pose.position.x = current_pose_.pose.position.x;
-        distance_marker.pose.position.y = current_pose_.pose.position.y;
-        distance_marker.pose.position.z = current_pose_.pose.position.z + 0.5;
-        distance_marker.scale.z = 0.2; // Text height
-        distance_marker.color.a = 1.0;
-        distance_marker.color.r = 1.0;
-        distance_marker.color.g = 1.0;
-        distance_marker.color.b = 1.0;
-        distance_marker_pub_->publish(distance_marker);
-
-        // Publish orientation as text only
-        visualization_msgs::msg::Marker orientation_marker;
-        orientation_marker.header.frame_id = "map";
-        orientation_marker.header.stamp = this->now();
-        orientation_marker.ns = "orientation";
-        orientation_marker.id = 0;
-        orientation_marker.type = visualization_msgs::msg::Marker::TEXT_VIEW_FACING;
-        orientation_marker.text = "θ: " + std::to_string(orientation_diff * 180.0/M_PI).substr(0,4) + "°";
-        orientation_marker.pose.position.x = current_pose_.pose.position.x;
-        orientation_marker.pose.position.y = current_pose_.pose.position.y;
-        orientation_marker.pose.position.z = current_pose_.pose.position.z + 1.5; // Below distance text
-        orientation_marker.scale.z = 0.2; // Text height
-        orientation_marker.color.a = 1.0;
-        orientation_marker.color.r = 1.0;
-        orientation_marker.color.g = 1.0;
-        orientation_marker.color.b = 1.0;
-        orientation_marker_pub_->publish(orientation_marker);
-
+        // Visualize state (with detection status)
         visualizeKalmanState(
-            state,               // Your 12D Kalman state vector
-            kalman_publisher_,    // Your marker publisher
-            left_detected,       // Boolean from detection
-            right_detected,      // Boolean from detection
+            state,
+            kalman_publisher_,
+            left_detected,
+            right_detected,
             leftmost_cluster,
             rightmost_cluster,
             white_cloud,
@@ -517,16 +470,13 @@ void KalmanRelLocalization::pointCloudCallback(const sensor_msgs::msg::PointClou
 void KalmanRelLocalization::initializeFilter() 
 {
     // Reset to initial state
-    state = Eigen::VectorXf::Zero(12);
-    state << 0.01, 0.0, 0.0, 0.0, 0.0, 0.0,   // Left lane
-                0.01, 0.0, 1.4, 0.0, 0.0, 0.0;    // Right lane
+    state = Eigen::VectorXf::Zero(6);
+    state << 0.00, 0.0, 0.7,    // Left lane
+                0.00, 0.0, -0-7;    // Right lane
     
     // Reset covariance
-    P = Eigen::MatrixXf::Identity(12,12) * 0.1;
-    P.block(0,0,3,3) *= 0.1f;
-    P.block(6,6,3,3) *= 0.1f;
-    P.block(3,3,3,3) *= 1.0f;
-    P.block(9,9,3,3) *= 1.0f;
+    P = Eigen::MatrixXf::Identity(6,6) * 0.1;
+
     
     first_update_ = true;
 }
@@ -562,7 +512,7 @@ void KalmanRelLocalization::predictionStep(rclcpp::Time current_time, float dt)
     }
 
     // 3. Apply bicycle model if we have motion
-    if (std::abs(current_control_[0]) > 0.01f) {  // Small threshold to avoid drift
+    if (std::abs(current_control_[0]) > 0.01f) {
         const float v = current_control_[0];
         const float gamma = current_control_[1];
         tf2::Quaternion q(
@@ -576,24 +526,19 @@ void KalmanRelLocalization::predictionStep(rclcpp::Time current_time, float dt)
         const float delta_theta = (v * tan(gamma) / wheelbase_L_) * dt;
         const float delta_y = v * sin(theta) * dt;
         
-        // Update state
-        state[1] -= delta_theta;  // b_L
-        state[2] -= delta_y;      // c_L
-        state[7] -= delta_theta;  // b_R 
-        state[8] -= delta_y;      // c_R
+        // Update state (only direct parameters now)
+        state[1] -= delta_theta;  // b_L 
+        state[2] -= delta_y;      // c_L 
+        state[4] -= delta_theta;  // b_R 
+        state[5] -= delta_y;      // c_R 
         
         // Adaptive process noise
         const float turn_factor = 1.0f + (2.0f * std::abs(gamma));
         Q.block(1,1,2,2) = Eigen::Matrix2f::Identity() * 0.01f * turn_factor;
-        Q.block(7,7,2,2) = Eigen::Matrix2f::Identity() * 0.01f * turn_factor;
+        Q.block(4,4,2,2) = Eigen::Matrix2f::Identity() * 0.01f * turn_factor;
     }
 
-    // 4. State transition matrix
-    F = Eigen::MatrixXf::Identity(12,12);
-    F(0,3) = dt; F(1,4) = dt; F(2,5) = dt;   // Left lane
-    F(6,9) = dt; F(7,10) = dt; F(8,11) = dt;  // Right lane
-
-    // 5. Covariance prediction
+    // Covariance prediction (simpler now)
     P = F * P * F.transpose() + Q;
 }
 

@@ -40,7 +40,7 @@ namespace lane_detection_visualization {
     
         // 2. Extract camera-relative coefficients from state
         Eigen::Vector3f left_coeffs(state[0], state[1], state[2]);  // a_L, b_L, c_L
-        Eigen::Vector3f right_coeffs(state[6], state[7], state[8]); // a_R, b_R, c_R
+        Eigen::Vector3f right_coeffs(state[3], state[4], state[5]); // a_R, b_R, c_R
     
         // 3. Determine visualization range in camera X coordinates
         auto getCameraXRange = [&](const pcl::PointIndices& indices) {

@@ -1,11 +1,10 @@
 #pragma once
 
 #include <deque>
-#include <utility> // for std::pair
+#include <utility>
 #include "std_msgs/msg/float32.hpp"
 #include "std_msgs/msg/float32_multi_array.hpp"
 #include <functional>
-
 #include <opencv2/core.hpp>
 #include <opencv2/core/types.hpp>
 #include "rclcpp/rclcpp.hpp"
@@ -13,21 +12,25 @@
 #include "visualization_msgs/msg/marker_array.hpp"
 #include <pcl/point_cloud.h>
 #include <pcl/point_types.h>
+#include <pcl/PointIndices.h>  // Added this
 #include <Eigen/Dense>
 #include <tf2_ros/buffer.h>
 #include <tf2_ros/transform_listener.h>
 #include <geometry_msgs/msg/pose_stamped.hpp>
+#include <sensor_msgs/msg/laser_scan.hpp>
+#include <nav2_msgs/msg/particle_cloud.hpp>
+#include <nav_msgs/msg/occupancy_grid.hpp>
+#include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
 
-class KalmanRelLocalization : public rclcpp::Node
+class GlobalLocalization : public rclcpp::Node
 {
 public:
-    KalmanRelLocalization();
+    GlobalLocalization();
     
 private:
     // Member variables
-    Eigen::VectorXf state;
-    Eigen::MatrixXf P, Q, R, I, F, H, H_full;
-    Eigen::Vector3f lane_transform_ = Eigen::Vector3f(0.0, 0.0, 1.4);
+    bool map_received_ = false;
+    nav_msgs::msg::OccupancyGrid::SharedPtr current_map_;
 
     std::shared_ptr<tf2_ros::Buffer> tf_buffer_;
     std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
@@ -52,19 +55,21 @@ private:
     const float servo_to_rad_ = 0.6f;
     const float speed_timeout_ = 0.5f;
     const float servo_timeout_ = 0.5f;
-
-    float last_valid_dt_ = 1.0/30.0; // Initialize with typical frame rate
+    float last_valid_dt_ = 1.0/30.0;
 
     // Callbacks
-    void pointCloudCallback(const sensor_msgs::msg::PointCloud2::SharedPtr msg);
+    void mapCallback(const nav_msgs::msg::OccupancyGrid::SharedPtr msg);
+    void particleCallback(const nav2_msgs::msg::ParticleCloud::SharedPtr msg);  // Added this
     void poseCallback(const geometry_msgs::msg::PoseStamped::SharedPtr msg);
     void speedCallback(const std_msgs::msg::Float32::SharedPtr msg);
     void servoCallback(const std_msgs::msg::Float32::SharedPtr msg);
+    void pointCloudCallback(const sensor_msgs::msg::PointCloud2::SharedPtr msg);
 
-    // Kalman Filter methods
-    void initializeFilter();
-    void predictionStep(rclcpp::Time current_time, float dt);
-    
+    sensor_msgs::msg::LaserScan clustersToLaserScan(
+        const pcl::PointCloud<pcl::PointXYZ>::Ptr& cloud,
+        const std::vector<pcl::PointIndices>& clusters,
+        const geometry_msgs::msg::Pose& current_pose);
+
     // Helper methods
     std::pair<float, float> findNearestControl(const std::deque<std::pair<rclcpp::Time, float>>& history, 
                                              rclcpp::Time query_time);
@@ -81,10 +86,14 @@ private:
     rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr distance_marker_pub_;
     rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr orientation_marker_pub_;
     rclcpp::Publisher<std_msgs::msg::Float32MultiArray>::SharedPtr distance_orientation_pub_;
+    rclcpp::Publisher<sensor_msgs::msg::LaserScan>::SharedPtr scan_publisher_;
+    rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr particle_viz_pub_;
 
     // Subscribers
     rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr subscription_;
     rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr pose_subscription_;
     rclcpp::Subscription<std_msgs::msg::Float32>::SharedPtr speed_sub_;
     rclcpp::Subscription<std_msgs::msg::Float32>::SharedPtr servo_sub_;
+    rclcpp::Subscription<nav_msgs::msg::OccupancyGrid>::SharedPtr map_sub_;
+    rclcpp::Subscription<nav2_msgs::msg::ParticleCloud>::SharedPtr particle_sub_;
 };

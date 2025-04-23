@@ -107,14 +107,14 @@ namespace lane_detection_utils {
             return Eigen::Vector3f(
             coeffs[0],  // a stays same (curvature)
             coeffs[1],  // b stays same (linear term)
-            coeffs[2] + lane_transform[2]/2.0f  // Offset c by half lane width
+            coeffs[2] - 0.7  // Offset c by half lane width
             );
         } else {
             // Shift left by half the lane width
             return Eigen::Vector3f(
             coeffs[0],  // a stays same
             coeffs[1],  // b stays same
-            coeffs[2] - lane_transform[2]/2.0f  // Offset c by half lane width
+            coeffs[2] + 0.7  // Offset c by half lane width
             );
         }
     }
@@ -227,9 +227,9 @@ namespace lane_detection_utils {
         
         std::vector<pcl::PointIndices> clusters;
         pcl::EuclideanClusterExtraction<pcl::PointXYZ> ec;
-        ec.setClusterTolerance(0.07);  // 8cm
-        ec.setMinClusterSize(220);     // Minimum points per cluster
-        ec.setMaxClusterSize(5000);    // Maximum points per cluster
+        ec.setClusterTolerance(0.06);  // 8cm
+        ec.setMinClusterSize(150);     // Minimum points per cluster
+        ec.setMaxClusterSize(750);    // Maximum points per cluster
         ec.setSearchMethod(tree);
         ec.setInputCloud(cloud);
         ec.extract(clusters);

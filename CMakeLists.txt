@@ -24,6 +24,9 @@ find_package(std_msgs REQUIRED)
 find_package(draco REQUIRED)
 find_package(point_cloud_interfaces REQUIRED)
 
+find_package(nav2_msgs REQUIRED)
+
+
 
 find_package(PCL REQUIRED COMPONENTS common io surface)
 find_package(PCL 1.12 REQUIRED COMPONENTS common segmentation filters)
@@ -37,6 +40,7 @@ include_directories(
   ${Eigen3_INCLUDE_DIRS}
   ${PCL_INCLUDE_DIRS}
   ${OpenCV_INCLUDE_DIRS}
+  ${nav2_msgs_INCLUDE_DIRS}
 )
 
 
@@ -74,6 +78,35 @@ ament_target_dependencies(kalman_rel_localization
 )
 
 target_link_libraries(kalman_rel_localization
+  ${PCL_LIBRARIES}
+  ${OpenCV_LIBS}
+  Eigen3::Eigen
+  tf2::tf2
+  tf2_ros::tf2_ros
+)
+
+
+
+add_executable(global_localization
+  src/global_localization.cpp
+  src/utilities.cpp
+  src/visualization.cpp
+)
+
+
+ament_target_dependencies(global_localization
+  rclcpp
+  sensor_msgs
+  geometry_msgs
+  visualization_msgs
+  std_msgs
+  tf2_ros
+  tf2_geometry_msgs
+  pcl_conversions
+  nav2_msgs
+)
+
+target_link_libraries(global_localization
   ${PCL_LIBRARIES}
   ${OpenCV_LIBS}
   Eigen3::Eigen
@@ -297,8 +330,14 @@ install(TARGETS
   point_cloud_processor
   frenet_motion
   kalman_rel_localization
+  global_localization
   test_compression
   DESTINATION lib/${PROJECT_NAME}
+)
+
+install(
+  DIRECTORY launch maps config
+  DESTINATION share/${PROJECT_NAME}
 )
 
 if(BUILD_TESTING)
