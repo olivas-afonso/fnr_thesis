@@ -1,26 +1,47 @@
 /**:
   ros__parameters:
     use_sim_time: true
-    alpha1: 0.2
-    alpha2: 0.2
-    alpha3: 0.2
-    alpha4: 0.2
-    min_particles: 500
-    max_particles: 2000
+    # Motion model noise parameters
+    alpha1: 0.2    # Rotation noise from rotation
+    alpha2: 0.2    # Rotation noise from translation
+    alpha3: 0.2    # Translation noise from translation
+    alpha4: 0.2    # Translation noise from rotation
+    
+    # Particle filter settings
+    min_particles: 1000
+    max_particles: 3000
+    recovery_alpha_slow: 0.001
+    recovery_alpha_fast: 0.1
+    
+    # Laser model settings
     laser_model_type: "likelihood_field"
-    laser_likelihood_max_dist: 2.0
-    laser_max_range: 10.0  # Should match your scan max range
-    laser_min_range: 0.1   # Should match your scan min range
-    update_min_d: 0.05
-    update_min_a: 0.1
-    transform_tolerance: 0.5
+    laser_likelihood_max_dist: 3.0  # Increased from 2.0 for better outdoor performance
+    laser_max_range: 10.0           # Must match your scan publisher
+    laser_min_range: 0.1            # Must match your scan publisher
+    laser_max_beams: 30             # Reduce computation by using subset of beams
+
+    #odom topic
+    odom_frame_id: "zed/zed_node/odom"
+    base_frame_id: "base_link"
+    global_frame_id: "map"
+
+    
+    # Update thresholds
+    update_min_d: 0.05    # Minimum translational movement to update filter
+    update_min_a: 0.1     # Minimum angular movement to update filter
+    
+    # Tolerance
+    transform_tolerance: 1.0  # Increased from 0.5 for more flexibility
+    
+    # Initial pose (with covariance)
+    set_initial_pose: true  # Explicitly enable initial pose setting
     initial_pose:
-      x: 0.0
+      x: 0.0                # Modify these to your known starting position
       y: 0.0
-      theta: 0.0
+      theta: 0.0            # Yaw in radians
       covariance: [0.25, 0.0, 0.0, 0.0, 0.0, 0.0,
                   0.0, 0.25, 0.0, 0.0, 0.0, 0.0,
                   0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
                   0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
                   0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
-                  0.0, 0.0, 0.0, 0.0, 0.0, 0.06853892326654787]
+                  0.0, 0.0, 0.0, 0.0, 0.0, 0.068]

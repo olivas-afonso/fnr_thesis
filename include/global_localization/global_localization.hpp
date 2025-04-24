@@ -22,6 +22,7 @@
 #include <nav_msgs/msg/occupancy_grid.hpp>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
 
+
 class GlobalLocalization : public rclcpp::Node
 {
 public:
@@ -68,7 +69,7 @@ private:
     sensor_msgs::msg::LaserScan clustersToLaserScan(
         const pcl::PointCloud<pcl::PointXYZ>::Ptr& cloud,
         const std::vector<pcl::PointIndices>& clusters,
-        const geometry_msgs::msg::Pose& current_pose);
+        const sensor_msgs::msg::PointCloud2::SharedPtr msg);
 
     // Helper methods
     std::pair<float, float> findNearestControl(const std::deque<std::pair<rclcpp::Time, float>>& history, 

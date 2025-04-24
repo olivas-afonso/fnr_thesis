@@ -37,8 +37,12 @@ GlobalLocalization::GlobalLocalization()
         map_qos,
         std::bind(&GlobalLocalization::mapCallback, this, std::placeholders::_1));
 
+    rclcpp::QoS particle_qos(10);
+    particle_qos.reliable();
+    
     particle_sub_ = this->create_subscription<nav2_msgs::msg::ParticleCloud>(
-        "/particle_cloud", 10,
+        "/particle_cloud", 
+        particle_qos,
         std::bind(&GlobalLocalization::particleCallback, this, std::placeholders::_1));
 
     particle_viz_pub_ = this->create_publisher<visualization_msgs::msg::MarkerArray>("particle_visualization", 10);
@@ -76,7 +80,6 @@ GlobalLocalization::GlobalLocalization()
     // Add parameters for laser scan conversion
     this->declare_parameter("min_scan_range", 0.1);
     this->declare_parameter("max_scan_range", 10.0);
-    this->declare_parameter("scan_height_threshold", 0.1);
 
     
         // In constructor:
@@ -127,61 +130,73 @@ void GlobalLocalization::mapCallback(const nav_msgs::msg::OccupancyGrid::SharedP
 sensor_msgs::msg::LaserScan GlobalLocalization::clustersToLaserScan(
     const pcl::PointCloud<pcl::PointXYZ>::Ptr& cloud,
     const std::vector<pcl::PointIndices>& clusters,
-    const geometry_msgs::msg::Pose& current_pose) 
+    const sensor_msgs::msg::PointCloud2::SharedPtr msg)
 {
     sensor_msgs::msg::LaserScan scan;
     
-    // Get parameters
-    double min_range, max_range, height_threshold;
-    this->get_parameter("min_scan_range", min_range);
-    this->get_parameter("max_scan_range", max_range);
-    this->get_parameter("scan_height_threshold", height_threshold);
+    // 1. Configure header
+    scan.header.stamp = msg->header.stamp;  // CRITICAL: Use original timestamp
+    scan.header.frame_id = msg->header.frame_id;
 
-    // Configure scan message
-    scan.header.stamp = this->now();
-    scan.header.frame_id = "base_link";  // Or your sensor frame
-    scan.angle_min = -M_PI;
-    scan.angle_max = M_PI;
-    scan.angle_increment = M_PI / 180.0;  // 1 degree resolution
+    // 2. Get parameters (with debug output)
+    double min_range = 0.1;
+    double max_range = 10.0;
+   
+    this->get_parameter_or("min_scan_range", min_range, min_range);
+    this->get_parameter_or("max_scan_range", max_range, max_range);
+
+    // 3. Configure scan ranges (180° FOV)
+    scan.angle_min = -M_PI;  // -90°
+    scan.angle_max = M_PI;   // +90°
+    scan.angle_increment = M_PI/270.0;  // 1° resolution
     scan.range_min = min_range;
     scan.range_max = max_range;
     scan.time_increment = 0.0;
     scan.scan_time = 0.1;
 
-    // Initialize ranges with max range (no detection)
-    int num_readings = (scan.angle_max - scan.angle_min) / scan.angle_increment;
-    scan.ranges.resize(num_readings, scan.range_max);
+    // 4. Initialize ranges
+    int num_bins = (scan.angle_max - scan.angle_min) / scan.angle_increment;
+    scan.ranges.assign(num_bins, std::numeric_limits<float>::infinity());
 
-    // Convert clusters to scan
+    // 5. Process points
+    size_t stats_total = 0, stats_height = 0, stats_range = 0, stats_angle = 0, stats_binned = 0;
+    
     for (const auto& cluster : clusters) {
         for (const auto& idx : cluster.indices) {
+            stats_total++;
             const auto& point = cloud->points[idx];
             
-            // Filter by height if needed
-            if (fabs(point.z) > height_threshold) {
-                continue;
-            }
-            
-            // Convert to polar coordinates
-            float range = sqrt(point.x * point.x + point.y * point.y);
+            // Range calculation
+            float range = sqrt(point.x*point.x + point.y*point.y);
             float angle = atan2(point.y, point.x);
             
-            // Only consider points in valid range
-            if (range < min_range || range > max_range) {
-                continue;
-            }
+            // Range check
+            if (range < min_range || range > max_range) { stats_range++; continue; }
             
-            // Find the appropriate bin
-            int bin = (angle - scan.angle_min) / scan.angle_increment;
-            if (bin >= 0 && bin < num_readings) {
-                // Keep the closest point in each bin
+            // Angle check
+            if (angle < scan.angle_min || angle > scan.angle_max) { stats_angle++; continue; }
+            
+            // Bin assignment
+            int bin = round((angle - scan.angle_min) / scan.angle_increment);
+            if (bin >= 0 && bin < num_bins) {
                 if (range < scan.ranges[bin]) {
                     scan.ranges[bin] = range;
+                    stats_binned++;
                 }
             }
         }
     }
-    
+
+    // 6. Debug output
+    RCLCPP_INFO(this->get_logger(),
+        "Scan conversion:\n"
+        "  Total points: %zu\n"
+        "  Filtered by height: %zu\n"
+        "  Filtered by range: %zu\n"
+        "  Filtered by angle: %zu\n"
+        "  Binned points: %zu",
+        stats_total, stats_height, stats_range, stats_angle, stats_binned);
+
     return scan;
 }
 
@@ -297,7 +312,23 @@ void GlobalLocalization::pointCloudCallback(const sensor_msgs::msg::PointCloud2:
     //MAKE AMCL HERE, TAKE CLUSTER TO LASER SCAN AND DO AMCL NAV2 THING FOR LOCALIZATION
 
     // Convert clusters to laser scan
-    auto scan = clustersToLaserScan(white_cloud, selected_clusters, current_pose_.pose);
+    try {
+        // Option 1: Lookup with timeout using tf2::Duration
+        auto transform = tf_buffer_->lookupTransform(
+            "map", "base_link",
+            tf2::TimePointZero,  // Use latest available
+            tf2::durationFromSec(0.1));  // Note: using tf2::durationFromSec
+        
+        // Option 2: Alternative using rclcpp::Time (if you prefer)
+        // auto transform = tf_buffer_->lookupTransform(
+        //     "map", "base_link",
+        //     this->now(),  // Current time
+        //     rclcpp::Duration::from_seconds(0.1));
+    } catch (tf2::TransformException &ex) {
+        RCLCPP_WARN(this->get_logger(), "TF lookup failed: %s", ex.what());
+        return;
+    }
+    auto scan = clustersToLaserScan(white_cloud, selected_clusters, msg);
     scan_publisher_->publish(scan);
     
     
