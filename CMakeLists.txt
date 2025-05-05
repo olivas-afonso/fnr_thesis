@@ -25,6 +25,7 @@ find_package(draco REQUIRED)
 find_package(point_cloud_interfaces REQUIRED)
 
 find_package(nav2_msgs REQUIRED)
+find_package(std_srvs REQUIRED)   # Add this
 
 
 
@@ -104,6 +105,7 @@ ament_target_dependencies(global_localization
   tf2_geometry_msgs
   pcl_conversions
   nav2_msgs
+  std_srvs
 )
 
 target_link_libraries(global_localization
@@ -113,6 +115,28 @@ target_link_libraries(global_localization
   tf2::tf2
   tf2_ros::tf2_ros
 )
+
+
+add_executable(map_transformer src/map_transformer.cpp)
+
+
+ament_target_dependencies(map_transformer
+  rclcpp
+  tf2_ros
+  geometry_msgs
+  tf2_geometry_msgs
+)
+
+
+add_executable(map_republisher src/map_republisher.cpp)
+ament_target_dependencies(map_republisher
+  rclcpp
+  nav_msgs
+  tf2_ros
+  geometry_msgs
+  tf2_geometry_msgs
+)
+
 
 
 
@@ -332,6 +356,8 @@ install(TARGETS
   kalman_rel_localization
   global_localization
   test_compression
+  map_transformer
+  map_republisher
   DESTINATION lib/${PROJECT_NAME}
 )
 

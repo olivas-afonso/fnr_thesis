@@ -18,12 +18,12 @@
     laser_likelihood_max_dist: 3.0  # Increased from 2.0 for better outdoor performance
     laser_max_range: 10.0           # Must match your scan publisher
     laser_min_range: 0.1            # Must match your scan publisher
-    laser_max_beams: 30             # Reduce computation by using subset of beams
+    laser_max_beams: 60             # Reduce computation by using subset of beams
 
     #odom topic
     odom_frame_id: "zed/zed_node/odom"
     base_frame_id: "base_link"
-    global_frame_id: "map"
+    global_frame_id: "transformed_map"
 
     
     # Update thresholds

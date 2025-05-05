@@ -22,6 +22,9 @@
 #include <nav_msgs/msg/occupancy_grid.hpp>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
 
+#include "std_srvs/srv/empty.hpp"
+
+
 
 class GlobalLocalization : public rclcpp::Node
 {
@@ -49,6 +52,7 @@ private:
     bool fit_side_;
     double time_jump_threshold_;
 
+
     // Constants
     const float wheel_radius_ = 0.1f;
     const float wheelbase_L_ = 0.22f;
@@ -66,10 +70,10 @@ private:
     void servoCallback(const std_msgs::msg::Float32::SharedPtr msg);
     void pointCloudCallback(const sensor_msgs::msg::PointCloud2::SharedPtr msg);
 
-    sensor_msgs::msg::LaserScan clustersToLaserScan(
+    sensor_msgs::msg::LaserScan pointCloudToLaserScan(
         const pcl::PointCloud<pcl::PointXYZ>::Ptr& cloud,
-        const std::vector<pcl::PointIndices>& clusters,
-        const sensor_msgs::msg::PointCloud2::SharedPtr msg);
+        const std::string& cloud_frame_id,
+        const rclcpp::Time& cloud_time);
 
     // Helper methods
     std::pair<float, float> findNearestControl(const std::deque<std::pair<rclcpp::Time, float>>& history, 
@@ -97,4 +101,7 @@ private:
     rclcpp::Subscription<std_msgs::msg::Float32>::SharedPtr servo_sub_;
     rclcpp::Subscription<nav_msgs::msg::OccupancyGrid>::SharedPtr map_sub_;
     rclcpp::Subscription<nav2_msgs::msg::ParticleCloud>::SharedPtr particle_sub_;
+
+
+    rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr debug_pub_;
 };

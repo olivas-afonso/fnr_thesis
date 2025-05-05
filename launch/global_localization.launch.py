@@ -5,6 +5,8 @@ from launch.actions import DeclareLaunchArgument
 from launch_ros.actions import Node
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.substitutions import FindPackageShare
+from launch_ros.actions import Node
+
 
 def generate_launch_description():
     # Package and directory setup
@@ -31,39 +33,59 @@ def generate_launch_description():
         Node(
             package='tf2_ros',
             executable='static_transform_publisher',
-            arguments=['0', '0', '0', '0', '0', '0', 'odom', 'base_footprint'],
+            arguments=['0', '0', '0', '0', '0', '0', 'odom', 'base_link'],
             output='screen'
         ),
         # base_footprint -> base_link
         Node(
             package='tf2_ros',
             executable='static_transform_publisher',
-            arguments=['0', '0', '0', '0', '0', '0', 'base_footprint', 'base_link'],
+            arguments=['0', '0', '0', '0', '0', '0', 'base_link', 'base_footprint'],
             output='screen'
         )
     ]
+
+    map_transformer_node = Node(
+        package=pkg_name,
+        executable='map_transformer',
+        name='map_transformer',
+        parameters=[{
+            'scale': 0.53,          # Change this value (0.5 = 50% smaller, 2.0 = 2x bigger)
+            'rotation_deg': -90.0,    # Rotation in degrees (positive = counter-clockwise)
+            'translation_x': -1.8,   # X-axis translation in meters
+            'translation_y': 5.12    # Y-axis translation in meters
+        }],
+        output='screen'
+    )
     
     # Map server node
     map_server = Node(
         package='nav2_map_server',
         executable='map_server',
         name='map_server',
-        output='screen',
         parameters=[{
             'yaml_filename': PathJoinSubstitution([
                 FindPackageShare(pkg_name),
                 'maps',
                 'map.yaml'
             ]),
-            'use_sim_time': LaunchConfiguration('use_sim_time'),
-            'negate': True
+            'use_sim_time': True,
+            'topic_name': 'persistent_map',  # Distinct topic name
         }],
         remappings=[
             ('/tf', 'tf'),
             ('/tf_static', 'tf_static')
         ]
     )
-    
+
+    # Add a static map republisher
+    map_republisher = Node(
+        package='point_cloud_processor',
+        executable='map_republisher',
+        name='map_republisher',
+        parameters=[{'use_sim_time': True}]
+    )
+
     # AMCL node with updated parameters
     amcl = Node(
         package='nav2_amcl',
@@ -80,7 +102,7 @@ def generate_launch_description():
                 'use_sim_time': LaunchConfiguration('use_sim_time'),
                 'odom_frame_id': 'odom',
                 'base_frame_id': 'base_link',
-                'global_frame_id': 'map',
+                'global_frame_id': 'transformed_map',
                 'transform_tolerance': 0.2
             }
         ],
@@ -126,7 +148,9 @@ def generate_launch_description():
     return LaunchDescription([
         use_sim_time,
         *tf_publishers,
+        #map_transformer_node,
         map_server,
+        map_republisher,
         amcl,
         lifecycle_manager,
         global_localization
