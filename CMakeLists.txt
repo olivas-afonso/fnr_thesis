@@ -141,6 +141,8 @@ ament_target_dependencies(map_republisher
 
 
 
+
+
 add_executable(point_cloud_processor src/point_cloud_processor.cpp)
 
 ament_target_dependencies(point_cloud_processor
@@ -345,6 +347,25 @@ target_link_libraries(test_compression
     draco::draco
 )
 
+add_executable(dynamic_tf_publisher src/dynamic_tf_publisher.cpp)
+ament_target_dependencies(dynamic_tf_publisher
+  rclcpp
+  tf2_ros
+  tf2_geometry_msgs
+  geometry_msgs
+  sensor_msgs
+  nav_msgs
+)
+
+add_executable(pose_waiter src/pose_waiter.cpp)
+ament_target_dependencies(pose_waiter
+  rclcpp
+  geometry_msgs
+  std_srvs
+  tf2 
+  tf2_ros
+  tf2_geometry_msgs
+)
 
 
 
@@ -358,6 +379,8 @@ install(TARGETS
   test_compression
   map_transformer
   map_republisher
+  dynamic_tf_publisher
+  pose_waiter 
   DESTINATION lib/${PROJECT_NAME}
 )
 

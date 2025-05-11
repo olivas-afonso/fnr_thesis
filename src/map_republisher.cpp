@@ -6,55 +6,69 @@
 #include "tf2/utils.h"
 
 class MapRepublisher : public rclcpp::Node {
-    public:
-        MapRepublisher() : Node("map_republisher") {
-            // Hardcoded transformation parameters
-            this->declare_parameter<double>("scale", 0.5);
-            this->declare_parameter<double>("rotation_deg", -90.0);
-            this->declare_parameter<double>("translation_x", -1.8);
-            this->declare_parameter<double>("translation_y", 5.12);
-    
-            map_sub_ = create_subscription<nav_msgs::msg::OccupancyGrid>(
-                "/persistent_map", 10,
-                [this](const nav_msgs::msg::OccupancyGrid::SharedPtr msg) {
-                    if (!map_received_) {
-                        original_map_ = *msg;
-                        map_received_ = true;
-                        timer_ = create_wall_timer(
-                            std::chrono::seconds(1),
-                            [this]() { republishMap(); });
-                    }
-                });
-    
-            map_pub_ = create_publisher<nav_msgs::msg::OccupancyGrid>(
-                "/map", rclcpp::QoS(1).transient_local());
-        }
-    
-    private:
-        void republishMap() {
+public:
+    MapRepublisher() : Node("map_republisher") {
+        tf_buffer_ = std::make_unique<tf2_ros::Buffer>(this->get_clock());
+        tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
+
+        map_sub_ = create_subscription<nav_msgs::msg::OccupancyGrid>(
+            "/persistent_map", 10,
+            [this](const nav_msgs::msg::OccupancyGrid::SharedPtr msg) {
+                if (!map_received_) {
+                    original_map_ = *msg;
+                    map_received_ = true;
+                    timer_ = create_wall_timer(
+                        std::chrono::milliseconds(100),
+                        [this]() { republishMap(); });
+                }
+            });
+
+        map_pub_ = create_publisher<nav_msgs::msg::OccupancyGrid>(
+            "/map", rclcpp::QoS(1).transient_local());
+    }
+    bool map_published_ = false;
+
+private:
+    void republishMap() {
+        try {
+            // Get the latest transform
+            auto transform = tf_buffer_->lookupTransform(
+                "map", "transformed_map",
+                tf2::TimePointZero);
+
+            // Create transformed map
             auto message = original_map_;
             
-            // Apply hardcoded transform
-            double scale = this->get_parameter("scale").as_double();
-            double rotation = this->get_parameter("rotation_deg").as_double() * M_PI / 180.0;
-            double tx = this->get_parameter("translation_x").as_double();
-            double ty = this->get_parameter("translation_y").as_double();
-    
-            // Apply transformations
-            message.info.resolution *= scale;
-            message.info.origin.position.x += tx;
-            message.info.origin.position.y += ty;
+            // Apply scale to resolution
+            message.info.resolution *= transform.transform.translation.z;
             
+            // Apply translation to origin
+            message.info.origin.position.x += transform.transform.translation.x;
+            message.info.origin.position.y += transform.transform.translation.y;
+            
+            // Apply rotation to origin
             tf2::Quaternion q;
-            q.setRPY(0, 0, rotation);
-            message.info.origin.orientation = tf2::toMsg(q);
-    
-            message.header.stamp = now();
-            message.header.frame_id = "map";
+            tf2::fromMsg(transform.transform.rotation, q);
+            double roll, pitch, yaw;
+            tf2::getEulerYPR(q, yaw, pitch, roll);
             
-            map_pub_->publish(message);
+            tf2::Quaternion origin_q;
+            tf2::fromMsg(message.info.origin.orientation, origin_q);
+            origin_q *= q;
+            message.info.origin.orientation = tf2::toMsg(origin_q);
+
+            message.header.stamp = now();
+            message.header.frame_id = "map"; // Keep original frame
+            
+            if (!map_published_) {
+                map_pub_->publish(message);
+                map_published_ = true;
+            }
+            
+        } catch (tf2::TransformException &ex) {
+            RCLCPP_WARN(get_logger(), "Transform error: %s", ex.what());
         }
-    
+    }
 
     std::unique_ptr<tf2_ros::Buffer> tf_buffer_;
     std::shared_ptr<tf2_ros::TransformListener> tf_listener_;

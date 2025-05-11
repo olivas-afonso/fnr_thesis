@@ -18,18 +18,23 @@
 #include <tf2_ros/transform_listener.h>
 #include <geometry_msgs/msg/pose_stamped.hpp>
 #include <sensor_msgs/msg/laser_scan.hpp>
-#include <nav2_msgs/msg/particle_cloud.hpp>
+//#include <nav2_msgs/msg/particle_cloud.hpp>
 #include <nav_msgs/msg/occupancy_grid.hpp>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
 
 #include "std_srvs/srv/empty.hpp"
+
+#include <pcl_conversions/pcl_conversions.h>
+#include <pcl/point_types.h>
+#include <pcl/point_cloud.h>
+#include <pcl/common/common.h>
 
 
 
 class GlobalLocalization : public rclcpp::Node
 {
 public:
-    GlobalLocalization();
+    GlobalLocalization(const rclcpp::NodeOptions & options);
     
 private:
     // Member variables
@@ -64,7 +69,7 @@ private:
 
     // Callbacks
     void mapCallback(const nav_msgs::msg::OccupancyGrid::SharedPtr msg);
-    void particleCallback(const nav2_msgs::msg::ParticleCloud::SharedPtr msg);  // Added this
+    //void particleCallback(const nav2_msgs::msg::ParticleCloud::SharedPtr msg);  // Added this
     void poseCallback(const geometry_msgs::msg::PoseStamped::SharedPtr msg);
     void speedCallback(const std_msgs::msg::Float32::SharedPtr msg);
     void servoCallback(const std_msgs::msg::Float32::SharedPtr msg);
@@ -74,6 +79,11 @@ private:
         const pcl::PointCloud<pcl::PointXYZ>::Ptr& cloud,
         const std::string& cloud_frame_id,
         const rclcpp::Time& cloud_time);
+
+    void visualizeScanVsGroundPoints(
+        const sensor_msgs::msg::LaserScan& scan,
+        const pcl::PointCloud<pcl::PointXYZ>::Ptr& white_cloud);
+    
 
     // Helper methods
     std::pair<float, float> findNearestControl(const std::deque<std::pair<rclcpp::Time, float>>& history, 
@@ -92,7 +102,11 @@ private:
     rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr orientation_marker_pub_;
     rclcpp::Publisher<std_msgs::msg::Float32MultiArray>::SharedPtr distance_orientation_pub_;
     rclcpp::Publisher<sensor_msgs::msg::LaserScan>::SharedPtr scan_publisher_;
-    rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr particle_viz_pub_;
+    //rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr particle_viz_pub_;
+
+    pcl::PointCloud<pcl::PointXYZ>::Ptr accumulated_white_cloud_;
+    rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr persistent_white_publisher_;
+
 
     // Subscribers
     rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr subscription_;
@@ -100,7 +114,7 @@ private:
     rclcpp::Subscription<std_msgs::msg::Float32>::SharedPtr speed_sub_;
     rclcpp::Subscription<std_msgs::msg::Float32>::SharedPtr servo_sub_;
     rclcpp::Subscription<nav_msgs::msg::OccupancyGrid>::SharedPtr map_sub_;
-    rclcpp::Subscription<nav2_msgs::msg::ParticleCloud>::SharedPtr particle_sub_;
+    //rclcpp::Subscription<nav2_msgs::msg::ParticleCloud>::SharedPtr particle_sub_;
 
 
     rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr debug_pub_;

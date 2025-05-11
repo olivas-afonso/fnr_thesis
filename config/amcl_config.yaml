@@ -2,10 +2,11 @@
   ros__parameters:
     use_sim_time: true
     # Motion model noise parameters
-    alpha1: 0.2    # Rotation noise from rotation
-    alpha2: 0.2    # Rotation noise from translation
-    alpha3: 0.2    # Translation noise from translation
-    alpha4: 0.2    # Translation noise from rotation
+    odom_model_type: "diff" 
+    alpha1: 0.0001    # Rotation noise from rotation  
+    alpha2: 0.0001    # Rotation noise from translation  
+    alpha3: 0.0002    # Translation noise from translation  
+    alpha4: 0.0001    # Translation noise from rotation  
     
     # Particle filter settings
     min_particles: 1000
@@ -18,12 +19,13 @@
     laser_likelihood_max_dist: 3.0  # Increased from 2.0 for better outdoor performance
     laser_max_range: 10.0           # Must match your scan publisher
     laser_min_range: 0.1            # Must match your scan publisher
-    laser_max_beams: 60             # Reduce computation by using subset of beams
+    laser_max_beams: 0             # Reduce computation by using subset of beams
 
     #odom topic
-    odom_frame_id: "zed/zed_node/odom"
-    base_frame_id: "base_link"
-    global_frame_id: "transformed_map"
+    odom_frame_id: "odom"
+    #odom_frame_id: "odom"
+    base_frame_id: "zed_camera_link"
+    global_frame_id: "map"
 
     
     # Update thresholds
@@ -32,16 +34,21 @@
     
     # Tolerance
     transform_tolerance: 1.0  # Increased from 0.5 for more flexibility
+    transform_cache_time: 20.0
+    use_pose_with_covariance_stamped: false
     
     # Initial pose (with covariance)
-    set_initial_pose: true  # Explicitly enable initial pose setting
+    set_initial_pose: true
     initial_pose:
-      x: 0.0                # Modify these to your known starting position
+      x: 0.0
       y: 0.0
-      theta: 0.0            # Yaw in radians
+      theta: 0.0
       covariance: [0.25, 0.0, 0.0, 0.0, 0.0, 0.0,
                   0.0, 0.25, 0.0, 0.0, 0.0, 0.0,
                   0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
                   0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
                   0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
                   0.0, 0.0, 0.0, 0.0, 0.0, 0.068]
+
+    print_level: 1 
+   

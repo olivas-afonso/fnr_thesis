@@ -5,56 +5,51 @@ from launch.actions import DeclareLaunchArgument
 from launch_ros.actions import Node
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.substitutions import FindPackageShare
-from launch_ros.actions import Node
-
+from launch.actions import TimerAction, ExecuteProcess
 
 def generate_launch_description():
     # Package and directory setup
     pkg_name = 'point_cloud_processor'
     pkg_dir = get_package_share_directory(pkg_name)
-
+    
+    bag_play_process = ExecuteProcess(
+        cmd=['ros2', 'bag', 'play', '/home/olivas/camera_ws/bags/cross_left_2',
+             '--loop', '--clock'],
+        output='screen'
+    )
+    
     # Launch arguments
-    use_sim_time = DeclareLaunchArgument(
+    use_sim_time = LaunchConfiguration('use_sim_time')
+    declare_use_sim_time = DeclareLaunchArgument(
         'use_sim_time',
         default_value='true',
         description='Use simulation clock if true'
     )
     
     # TF Tree Publishers
-    tf_publishers = [
+    #tf_publishers = [
         # map -> odom
-        Node(
-            package='tf2_ros',
-            executable='static_transform_publisher',
-            arguments=['0', '0', '0', '0', '0', '0', 'map', 'odom'],
-            output='screen'
-        ),
-        # odom -> base_footprint
-        Node(
-            package='tf2_ros',
-            executable='static_transform_publisher',
-            arguments=['0', '0', '0', '0', '0', '0', 'odom', 'base_link'],
-            output='screen'
-        ),
-        # base_footprint -> base_link
-        Node(
-            package='tf2_ros',
-            executable='static_transform_publisher',
-            arguments=['0', '0', '0', '0', '0', '0', 'base_link', 'base_footprint'],
-            output='screen'
-        )
-    ]
+    #    Node(
+    #        package='tf2_ros',
+    #        executable='static_transform_publisher',
+    #        arguments=['0', '0', '0', '0', '0', '0', 'map', 'zed/zed_node/odom'],
+    #        parameters=[{'use_sim_time': use_sim_time}],
+    #        output='screen'
+    #    ),
+    #    Node(
+    #        package='tf2_ros',
+    #        executable='static_transform_publisher',
+    #        arguments=['0', '0', '0', '0', '0', '0', 'zed/zed_node/odom', 'zed_camera_link'],
+    #        parameters=[{'use_sim_time': use_sim_time}],
+    #        output='screen'
+    #    )
+    #   ]
 
     map_transformer_node = Node(
         package=pkg_name,
         executable='map_transformer',
         name='map_transformer',
-        parameters=[{
-            'scale': 0.53,          # Change this value (0.5 = 50% smaller, 2.0 = 2x bigger)
-            'rotation_deg': -90.0,    # Rotation in degrees (positive = counter-clockwise)
-            'translation_x': -1.8,   # X-axis translation in meters
-            'translation_y': 5.12    # Y-axis translation in meters
-        }],
+        parameters=[{'use_sim_time': use_sim_time}],
         output='screen'
     )
     
@@ -69,8 +64,8 @@ def generate_launch_description():
                 'maps',
                 'map.yaml'
             ]),
-            'use_sim_time': True,
-            'topic_name': 'persistent_map',  # Distinct topic name
+            'use_sim_time': use_sim_time,
+            'topic_name': 'persistent_map',
         }],
         remappings=[
             ('/tf', 'tf'),
@@ -83,7 +78,7 @@ def generate_launch_description():
         package='point_cloud_processor',
         executable='map_republisher',
         name='map_republisher',
-        parameters=[{'use_sim_time': True}]
+        parameters=[{'use_sim_time': use_sim_time}]
     )
 
     # AMCL node with updated parameters
@@ -93,17 +88,13 @@ def generate_launch_description():
         name='amcl',
         output='screen',
         parameters=[
-            PathJoinSubstitution([
-                FindPackageShare(pkg_name),
-                'config',
-                'amcl_config.yaml'
-            ]),
+            PathJoinSubstitution([FindPackageShare(pkg_name), 'config', 'amcl_config.yaml']),
             {
-                'use_sim_time': LaunchConfiguration('use_sim_time'),
+                'use_sim_time': use_sim_time,
                 'odom_frame_id': 'odom',
-                'base_frame_id': 'base_link',
-                'global_frame_id': 'transformed_map',
-                'transform_tolerance': 0.2
+                'base_frame_id': 'zed_camera_link',
+                'global_frame_id': 'map',
+                'transform_tolerance': 1.0
             }
         ],
         remappings=[
@@ -120,7 +111,7 @@ def generate_launch_description():
         name='lifecycle_manager_localization',
         output='screen',
         parameters=[{
-            'use_sim_time': LaunchConfiguration('use_sim_time'),
+            'use_sim_time': use_sim_time,
             'autostart': True,
             'node_names': ['map_server', 'amcl']
         }],
@@ -137,21 +128,38 @@ def generate_launch_description():
         name='global_localization',
         output='screen',
         parameters=[{
-            'use_sim_time': LaunchConfiguration('use_sim_time'),
+            'use_sim_time': use_sim_time,
             'fit_side': True,
             'time_jump_threshold': 5.0,
             'min_scan_range': 0.1,
             'max_scan_range': 10.0
         }]
     )
+
+    tf_publisher_node = Node(
+        package='point_cloud_processor',
+        executable='dynamic_tf_publisher',
+        name='dynamic_tf_publisher',
+        parameters=[{'use_sim_time': use_sim_time}],
+        output='screen'
+    )
+
+    # Delay launching nodes to let /clock start ticking
+    delayed_nodes = TimerAction(
+        period=1.0,
+        actions=[
+            tf_publisher_node,
+            map_transformer_node,
+            map_server,
+            map_republisher,
+            amcl,
+            lifecycle_manager,
+            global_localization
+        ]
+    )
     
     return LaunchDescription([
-        use_sim_time,
-        *tf_publishers,
-        #map_transformer_node,
-        map_server,
-        map_republisher,
-        amcl,
-        lifecycle_manager,
-        global_localization
+        declare_use_sim_time,
+        bag_play_process,
+        delayed_nodes,
     ])
