@@ -66,7 +66,10 @@ GlobalLocalization::GlobalLocalization(const rclcpp::NodeOptions & options)
     distance_marker_pub_ = this->create_publisher<visualization_msgs::msg::Marker>("distance_marker", 10);
     orientation_marker_pub_ = this->create_publisher<visualization_msgs::msg::Marker>("orientation_marker", 10);
 
-    scan_publisher_ = this->create_publisher<sensor_msgs::msg::LaserScan>("/cluster_scan", 10);
+    scan_publisher_ = this->create_publisher<sensor_msgs::msg::LaserScan>(
+        "/cluster_scan", 
+        rclcpp::QoS(10).best_effort()  // Match AMCL's default
+    );
 
     tf_buffer_ = std::make_shared<tf2_ros::Buffer>(this->get_clock());
     tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_, this);
@@ -140,7 +143,7 @@ sensor_msgs::msg::LaserScan GlobalLocalization::pointCloudToLaserScan(
 {
     sensor_msgs::msg::LaserScan scan;
     scan.header.stamp = cloud_time;
-    scan.header.frame_id = "zed_camera_link";  // Use ZED as base frame
+    scan.header.frame_id = "base_link";  // Use ZED as base frame
 
     // 1. Load scan parameters
     double min_range = 0.1, max_range = 10.0;
@@ -162,12 +165,12 @@ sensor_msgs::msg::LaserScan GlobalLocalization::pointCloudToLaserScan(
     geometry_msgs::msg::TransformStamped tf_camera_to_zed;
     try {
         tf_camera_to_zed = tf_buffer_->lookupTransform(
-            "zed_camera_link", cloud_frame_id, tf2::TimePointZero,
+            "base_link", cloud_frame_id, cloud_time,
             tf2::durationFromSec(0.1));
     } catch (const tf2::TransformException &ex) {
         RCLCPP_ERROR(this->get_logger(),
             "TF lookup failed from '%s' to '%s': %s",
-            cloud_frame_id.c_str(), "zed_camera_link", ex.what());
+            cloud_frame_id.c_str(), "base_link", ex.what());
         return scan;  // return scan filled with default range values
     }
 
@@ -184,7 +187,7 @@ sensor_msgs::msg::LaserScan GlobalLocalization::pointCloudToLaserScan(
         float range = std::hypot(x, y);
         if (range < scan.range_min || range > scan.range_max) continue;
 
-        float angle = std::atan2(y, x);
+        float angle = std::atan2(y, x);  
         if (angle < scan.angle_min || angle > scan.angle_max) continue;
 
         size_t bin = static_cast<size_t>((angle - scan.angle_min) / scan.angle_increment);

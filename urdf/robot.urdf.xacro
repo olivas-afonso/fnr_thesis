@@ -1,0 +1,117 @@
+<?xml version="1.0"?>
+<robot name="my_robot" xmlns:xacro="http://ros.org/wiki/xacro">
+
+  <!-- ========== BASE FRAMES ========== -->
+  <link name="odom"/>
+
+  <!-- ========== ROBOT DIMENSIONS ========== -->
+  <xacro:property name="base_length" value="0.4" />
+  <xacro:property name="base_width" value="0.3" />
+  <xacro:property name="base_height" value="0.1" />
+  
+  <xacro:property name="wheel_radius" value="0.1" />
+  <xacro:property name="wheel_width" value="0.05" />
+  <xacro:property name="wheel_y_offset" value="0.15" />
+  <xacro:property name="wheel_x_offset" value="0.15" />
+  
+  <xacro:property name="camera_x" value="0.1" />
+  <xacro:property name="camera_z" value="0.2" />
+  
+  <xacro:property name="vesc_x" value="0.1" />
+  <xacro:property name="vesc_z" value="0.05" />
+
+  <!-- ========== MAIN ROBOT STRUCTURE ========== -->
+  <link name="base_link">
+    <visual>
+      <geometry>
+        <box size="${base_length} ${base_width} ${base_height}"/>
+      </geometry>
+      <material name="blue"/>
+    </visual>
+    <collision>
+      <geometry>
+        <box size="${base_length} ${base_width} ${base_height}"/>
+      </geometry>
+    </collision>
+    <inertial>
+      <mass value="0.001"/>
+      <inertia ixx="0.001" ixy="0" ixz="0" iyy="0.001" iyz="0" izz="0.001"/>
+    </inertial>
+  </link>
+
+  <joint name="odom_joint" type="fixed">
+    <parent link="odom"/>
+    <child link="base_link"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+  </joint>
+
+  <!-- ========== WHEELS ========== -->
+  <xacro:macro name="wheel" params="name x y z">
+    <link name="${name}_wheel">
+      <visual>
+        <geometry>
+          <cylinder radius="${wheel_radius}" length="${wheel_width}"/>
+        </geometry>
+        <material name="black"/>
+      </visual>
+    </link>
+    
+    <joint name="${name}_joint" type="continuous">
+      <parent link="base_link"/>
+      <child link="${name}_wheel"/>
+      <origin xyz="${x} ${y} ${z}" rpy="0 1.5707 0"/>
+      <axis xyz="0 0 1"/>
+    </joint>
+  </xacro:macro>
+
+  <xacro:wheel name="front_left" x="${wheel_x_offset}" y="${wheel_y_offset}" z="0"/>
+  <xacro:wheel name="front_right" x="${wheel_x_offset}" y="-${wheel_y_offset}" z="0"/>
+  <xacro:wheel name="rear_left" x="-${wheel_x_offset}" y="${wheel_y_offset}" z="0"/>
+  <xacro:wheel name="rear_right" x="-${wheel_x_offset}" y="-${wheel_y_offset}" z="0"/>
+
+  <!-- ========== CAMERA ========== -->
+  <link name="zed_camera_link">
+    <visual>
+      <geometry>
+        <box size="0.1 0.2 0.05"/>
+      </geometry>
+      <material name="gray"/>
+    </visual>
+  </link>
+
+  <joint name="camera_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="zed_camera_link"/>
+    <origin xyz="${camera_x} 0 ${camera_z}" rpy="0 0 0"/>
+  </joint>
+
+  <!-- ========== VESC ========== -->
+  <link name="vesc_link">
+    <visual>
+      <geometry>
+        <box size="0.08 0.12 0.04"/>
+      </geometry>
+      <material name="red"/>
+    </visual>
+  </link>
+
+  <joint name="vesc_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="vesc_link"/>
+    <origin xyz="${vesc_x} 0 ${vesc_z}" rpy="0 0 0"/>
+  </joint>
+
+  <!-- ========== MATERIAL DEFINITIONS ========== -->
+  <material name="blue">
+    <color rgba="0 0 0.8 1"/>
+  </material>
+  <material name="black">
+    <color rgba="0 0 0 1"/>
+  </material>
+  <material name="gray">
+    <color rgba="0.7 0.7 0.7 1"/>
+  </material>
+  <material name="red">
+    <color rgba="0.8 0 0 1"/>
+  </material>
+</robot>

@@ -1,0 +1,13 @@
+Visualization Manager:
+  Displays:
+    - Class: rviz_default_plugins/RobotModel
+      Enabled: true
+      Name: RobotModel
+      TF Prefix: ""
+    - Class: rviz_default_plugins/TF
+      Enabled: true
+      Marker Scale: 1.0
+      Name: TF
+  Global Options:
+    Background Color: 48 48 48
+    Fixed Frame: odom  # MUST match your URDF root

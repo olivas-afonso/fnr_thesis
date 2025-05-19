@@ -385,7 +385,7 @@ install(TARGETS
 )
 
 install(
-  DIRECTORY launch maps config
+  DIRECTORY launch maps config urdf
   DESTINATION share/${PROJECT_NAME}
 )
 

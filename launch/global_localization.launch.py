@@ -6,6 +6,7 @@ from launch_ros.actions import Node
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch_ros.substitutions import FindPackageShare
 from launch.actions import TimerAction, ExecuteProcess
+from launch.substitutions import Command
 
 def generate_launch_description():
     # Package and directory setup
@@ -45,6 +46,27 @@ def generate_launch_description():
     #    )
     #   ]
 
+
+    robot_state_publisher = Node(
+        package='robot_state_publisher',
+        executable='robot_state_publisher',
+        name='robot_state_publisher',
+        output='screen',
+        parameters=[{
+            'use_sim_time': use_sim_time,
+            'robot_description': Command([
+                'xacro ',
+                PathJoinSubstitution([
+                    FindPackageShare(pkg_name),
+                    'urdf',
+                    'duarte.urdf.xacro'
+                ]),
+                ' use_gazebo:=false'  # Add this line
+            ]),
+            'publish_frequency': 50.0
+        }],
+    )
+
     map_transformer_node = Node(
         package=pkg_name,
         executable='map_transformer',
@@ -81,6 +103,20 @@ def generate_launch_description():
         parameters=[{'use_sim_time': use_sim_time}]
     )
 
+
+    ekf_node = Node(
+        package='robot_localization',
+        executable='ekf_node',
+        name='ekf_filter_node',
+        output='screen',
+        parameters=[os.path.join(pkg_dir, 'config', 'ekf_config.yaml'),
+                    {'use_sim_time': use_sim_time}],
+        remappings=[
+            ('odometry/filtered', '/fused_odom'),
+            ('/set_pose', '/initialpose')  
+        ]
+    )
+
     # AMCL node with updated parameters
     amcl = Node(
         package='nav2_amcl',
@@ -92,7 +128,8 @@ def generate_launch_description():
             {
                 'use_sim_time': use_sim_time,
                 'odom_frame_id': 'odom',
-                'base_frame_id': 'zed_camera_link',
+                #'base_frame_id': 'zed_camera_link',
+                'base_frame_id': 'base_link',
                 'global_frame_id': 'map',
                 'transform_tolerance': 1.0
             }
@@ -144,14 +181,17 @@ def generate_launch_description():
         output='screen'
     )
 
+
     # Delay launching nodes to let /clock start ticking
     delayed_nodes = TimerAction(
         period=1.0,
         actions=[
+            robot_state_publisher,
             tf_publisher_node,
             map_transformer_node,
             map_server,
             map_republisher,
+            #ekf_node,
             amcl,
             lifecycle_manager,
             global_localization
