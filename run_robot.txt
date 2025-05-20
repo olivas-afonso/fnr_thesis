@@ -1,0 +1,14 @@
+first
+ros2 launch zed_wrapper zed_camera.launch.py   camera_model:=zed2i   publish_urdf:=false   publish_map_tf:=false publish_tf:=false
+
+then publish the transforms information
+
+ros2 launch point_cloud_processor robot_integration_test.launch.py use_zed_localization:=false
+
+and thats all!!
+
+important notes:
+
+there is no map topic, to be done afterwards.
+ekf odom fusion is only working with 1 odometry (camera), missing the other one.
+should experiment with if better with or without imu (prefusion).

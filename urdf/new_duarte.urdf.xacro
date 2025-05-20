@@ -1,0 +1,126 @@
+<?xml version="1.0"?>
+<robot name="my_robot">
+
+    <material name = "grey">
+        <color rgba = "0.7 0.7 0.7 1"/>
+    </material>
+
+    <material name = "green">
+        <color rgba = "0 0.6 0 1"/>
+    </material>
+    
+    
+    <material name = "white">
+        <color rgba = "1 1 1 1"/>
+    </material>
+
+
+    <link name="base_link">
+        <visual>
+            <geometry>
+                <box size="0.6 0.4 0.2"/>
+            </geometry>
+            <origin xyz="0 0 0.1" rpy="0 0 0"/>
+            <material name="green" />
+        </visual>
+    </link>
+
+    <!-- VESC Link (connected to vesc/base_link) -->
+    <link name="vesc_visual"/>
+    <joint name="base_to_vesc_visual" type="fixed">
+        <parent link="base_link"/>
+        <child link="vesc_visual"/>
+        <origin xyz="0 0 0.15" rpy="0 0 0"/> <!-- On top center -->
+    </joint>
+
+    <!-- Camera Link (connected to zed_camera_link) -->
+    <link name="camera_visual"/>
+    <joint name="base_to_camera_visual" type="fixed">
+        <parent link="base_link"/>
+        <child link="camera_visual"/>
+        <origin xyz="0.25 0 0.2" rpy="0 0 0"/> <!-- Front center -->
+    </joint>
+
+    <joint name="vesc_connection" type="fixed">
+        <parent link="vesc_visual"/>
+        <child link="vesc/base_link"/> <!-- Connected to VESC driver's frame -->
+    </joint>
+
+    <joint name="camera_connection" type="fixed">
+        <parent link="camera_visual"/>
+        <child link="zed_camera_link"/> <!-- Connected to ZED driver's frame -->
+    </joint>
+
+    <link name="back_left_wheel">
+        <visual>
+            <geometry>
+                <cylinder radius="0.1" length="0.05"/>
+            </geometry>
+            <origin xyz="0 0 0" rpy="1.57 0 0"/>
+            <material name="grey"/>
+        </visual>
+    </link>
+
+    
+    <link name="back_right_wheel">
+        <visual>
+            <geometry>
+                <cylinder radius="0.1" length="0.05"/>
+            </geometry>
+            <origin xyz="0 0 0" rpy="1.57 0 0"/>
+            <material name="grey"/>
+        </visual>
+    </link>
+
+    <link name="front_right_wheel">
+        <visual>
+            <geometry>
+                <cylinder radius="0.1" length="0.05"/>
+            </geometry>
+            <origin xyz="0 0 0" rpy="1.57 0 0"/>
+            <material name="grey"/>
+        </visual>
+    </link>
+
+    <link name="front_left_wheel">
+        <visual>
+            <geometry>
+                <cylinder radius="0.1" length="0.05"/>
+            </geometry>
+            <origin xyz="0 0 0" rpy="1.57 0 0"/>
+            <material name="grey"/>
+        </visual>
+    </link>
+
+
+    <joint name="base_front_left_wheel_joint" type="continuous">
+        <parent link="base_link" />
+        <child link="front_left_wheel" />
+        <origin xyz="0.15 0.255 0" rpy="0 0 0" />        
+        <axis xyz="0 1 0" />        
+    </joint>
+
+    <joint name="base_front_right_wheel_joint" type="continuous">
+        <parent link="base_link" />
+        <child link="front_right_wheel" />
+        <origin xyz="0.15 -0.255 0" rpy="0 0 0" />        
+        <axis xyz="0 1 0" />        
+    </joint>
+
+
+    <joint name="base_back_left_wheel_joint" type="continuous">
+        <parent link="base_link" />
+        <child link="back_left_wheel" />
+        <origin xyz="-0.15 0.255 0" rpy="0 0 0" />        
+        <axis xyz="0 1 0" />        
+    </joint>
+
+    <joint name="base_back_right_wheel_joint" type="continuous">
+        <parent link="base_link" />
+        <child link="back_right_wheel" />
+        <origin xyz="-0.15 -0.255 0" rpy="0 0 0" />        
+        <axis xyz="0 1 0" />        
+    </joint>
+
+
+</robot>

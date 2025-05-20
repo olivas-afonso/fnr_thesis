@@ -385,7 +385,7 @@ install(TARGETS
 )
 
 install(
-  DIRECTORY launch maps config urdf
+  DIRECTORY launch maps config urdf rviz2
   DESTINATION share/${PROJECT_NAME}
 )
 
