@@ -38,14 +38,14 @@
     <joint name="zed_joint" type="fixed">
       <parent link="zed_camera_link"/>
       <child link="base_link"/>
-      <origin xyz="-0.3 0.0 -0.20" rpy="0 0 0"/>
+      <origin xyz="-0.21 0.0 -0.17" rpy="0 0 0"/>
     </joint>
   </xacro:if>
   <xacro:unless value="$(arg use_zed_localization)">
     <joint name="zed_joint" type="fixed">
       <parent link="base_link"/>
       <child link="zed_camera_link"/>
-      <origin xyz="0.3 0.0 0.20" rpy="0 0 0"/>
+      <origin xyz="0.21 0.0 0.15" rpy="0 0 0"/>
     </joint>
   </xacro:unless>
 
@@ -56,8 +56,8 @@
 <!-- Keep your existing vesc_joint -->
 <joint name="vesc_joint" type="fixed">
   <parent link="base_link"/>
-  <child link="vesc_base_link"/>
-  <origin xyz="-0.0 0 0.20" rpy="0 0 0"/>
+  <child link="vesc/base_link"/>
+  <origin xyz="-0.0 -0.03 0.13" rpy="0 0 0"/>
 </joint>
 
 </robot>

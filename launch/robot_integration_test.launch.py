@@ -111,7 +111,7 @@ def launch_setup(context, *args, **kwargs):
         parameters=[ekf_config_path]
     )
 
-    return [rsp_node, jsp_node, rviz2_node, ekf_node]
+    return [rsp_node, jsp_node] #, rviz2_node, ekf_nod]
 
 
 def generate_launch_description():

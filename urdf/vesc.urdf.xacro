@@ -4,7 +4,7 @@
   <!-- VESC Macro Definition -->
   <xacro:macro name="vesc" params="name:=vesc">
     <!-- VESC Base Link -->
-    <link name="${name}_base_link">
+    <link name="vesc/base_link">
       <visual>
         <origin xyz="0 0 0" rpy="0 0 0"/>
         <geometry>
