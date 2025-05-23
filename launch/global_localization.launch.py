@@ -8,13 +8,20 @@ from launch_ros.substitutions import FindPackageShare
 from launch.actions import TimerAction, ExecuteProcess
 from launch.substitutions import Command
 
+
+ekf_config_path = PathJoinSubstitution([
+    FindPackageShare('point_cloud_processor'),
+    'config',
+    'ekf_config.yaml'
+])
+
 def generate_launch_description():
     # Package and directory setup
     pkg_name = 'point_cloud_processor'
     pkg_dir = get_package_share_directory(pkg_name)
     
     bag_play_process = ExecuteProcess(
-        cmd=['ros2', 'bag', 'play', '/home/olivas/camera_ws/bags/cross_left_2',
+        cmd=['ros2', 'bag', 'play', '/home/jetson/test_ws/bags/left_full_robot_1',
              '--loop', '--clock'],
         output='screen'
     )
@@ -28,23 +35,16 @@ def generate_launch_description():
     )
     
     # TF Tree Publishers
-    #tf_publishers = [
+    tf_publishers = [
         # map -> odom
-    #    Node(
-    #        package='tf2_ros',
-    #        executable='static_transform_publisher',
-    #        arguments=['0', '0', '0', '0', '0', '0', 'map', 'zed/zed_node/odom'],
-    #        parameters=[{'use_sim_time': use_sim_time}],
-    #        output='screen'
-    #    ),
-    #    Node(
-    #        package='tf2_ros',
-    #        executable='static_transform_publisher',
-    #        arguments=['0', '0', '0', '0', '0', '0', 'zed/zed_node/odom', 'zed_camera_link'],
-    #        parameters=[{'use_sim_time': use_sim_time}],
-    #        output='screen'
-    #    )
-    #   ]
+        Node(
+            package='tf2_ros',
+            executable='static_transform_publisher',
+            arguments=['0', '0', '0', '0', '0', '0', 'map', 'odom'],
+            parameters=[{'use_sim_time': use_sim_time}],
+            output='screen'
+        )
+    ]
 
 
     robot_state_publisher = Node(
@@ -87,7 +87,7 @@ def generate_launch_description():
                 'map.yaml'
             ]),
             'use_sim_time': use_sim_time,
-            'topic_name': 'persistent_map',
+            'topic_name': 'map',
         }],
         remappings=[
             ('/tf', 'tf'),
@@ -181,17 +181,28 @@ def generate_launch_description():
         output='screen'
     )
 
+    ekf_node = Node(
+        package='robot_localization',
+        executable='ekf_node',
+        name='ekf_localization_node',
+        output='screen',
+        parameters=[
+            ekf_config_path,
+            {'use_sim_time': use_sim_time}  # Add this line
+        ]
+    )
+
 
     # Delay launching nodes to let /clock start ticking
     delayed_nodes = TimerAction(
         period=1.0,
         actions=[
-            robot_state_publisher,
-            tf_publisher_node,
-            map_transformer_node,
+            #robot_state_publisher,
+            #tf_publisher_node,
+            #map_transformer_node,
             map_server,
-            map_republisher,
-            #ekf_node,
+            #map_republisher,
+            ekf_node,
             amcl,
             lifecycle_manager,
             global_localization
@@ -201,5 +212,6 @@ def generate_launch_description():
     return LaunchDescription([
         declare_use_sim_time,
         bag_play_process,
+        *tf_publishers,
         delayed_nodes,
     ])

@@ -64,19 +64,7 @@ private:
         }
         last_processed_time_ = now;
     
-        // Transform to map frame with larger timeout
-        try {
-            auto transform = tf_buffer_->lookupTransform(
-                "map", msg->header.frame_id,
-                msg->header.stamp,
-                tf2::durationFromSec(1.0));
-            
-            sensor_msgs::msg::PointCloud2 transformed_cloud;
-            tf2::doTransform(*msg, transformed_cloud, transform);
-            processPointCloud(std::make_shared<sensor_msgs::msg::PointCloud2>(transformed_cloud));
-        } catch (const tf2::TransformException &ex) {
-            RCLCPP_WARN(this->get_logger(), "TF error: %s", ex.what());
-        }
+        processPointCloud(msg);
     }
 
     void processPointCloud(sensor_msgs::msg::PointCloud2::SharedPtr msg) {
@@ -89,6 +77,7 @@ private:
         pcl::PointCloud<pcl::PointXYZRGB>::Ptr cloud(new pcl::PointCloud<pcl::PointXYZRGB>());
         pcl::fromROSMsg(*msg, *cloud);
 
+        //Downsampling
         pcl::VoxelGrid<pcl::PointXYZRGB> voxel_filter;
         voxel_filter.setInputCloud(cloud);
         voxel_filter.setLeafSize(0.02f, 0.02f, 0.02f);
@@ -99,13 +88,8 @@ private:
         pcl::PassThrough<pcl::PointXYZRGB> z_filter;
         z_filter.setInputCloud(downsampled_cloud);
         z_filter.setFilterFieldName("z");
-        try {
-            auto tf = tf_buffer_->lookupTransform("map", "base_link", tf2::TimePointZero);
-            double robot_height = tf.transform.translation.z;
-            z_filter.setFilterLimits(robot_height - 1.5, robot_height + 1.2);
-        } catch (...) {
-            z_filter.setFilterLimits(-1.0, 0.5);
-        }
+        z_filter.setFilterLimits(-1.0, 0.5); // Relative to camera
+        
         pcl::PointCloud<pcl::PointXYZRGB>::Ptr height_filtered_cloud(new pcl::PointCloud<pcl::PointXYZRGB>());
         z_filter.filter(*height_filtered_cloud);
 
@@ -159,6 +143,7 @@ private:
         extract.setNegative(true);
         extract.filter(*non_ground_cloud);
 
+        /*
         // Get camera height with fallback
         double camera_height = 0.0;
         try {
@@ -175,6 +160,7 @@ private:
                 RCLCPP_ERROR(this->get_logger(), "Using default camera height");
             }
         }
+            
 
         // Normalize ground plane
         pcl::PointCloud<pcl::PointXYZRGB>::Ptr normalized_ground(new pcl::PointCloud<pcl::PointXYZRGB>());
@@ -183,18 +169,17 @@ private:
             new_pt.z = camera_height;
             normalized_ground->push_back(new_pt);
         }
+            */
 
         // Publish results
         sensor_msgs::msg::PointCloud2 ground_msg;
-        pcl::toROSMsg(*normalized_ground, ground_msg);
-        ground_msg.header = msg->header;
-        ground_msg.header.frame_id = "map";
+        pcl::toROSMsg(*ground_cloud, ground_msg);
+        ground_msg.header = msg->header; // Keep original frame_id
         ground_publisher_->publish(ground_msg);
         
         sensor_msgs::msg::PointCloud2 non_ground_msg;
         pcl::toROSMsg(*non_ground_cloud, non_ground_msg);
-        non_ground_msg.header = msg->header;
-        non_ground_msg.header.frame_id = "map";
+        non_ground_msg.header = msg->header; // Keep original frame_id
         nonground_publisher_->publish(non_ground_msg);
     }
 };
