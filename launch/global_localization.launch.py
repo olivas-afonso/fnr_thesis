@@ -20,12 +20,6 @@ def generate_launch_description():
     pkg_name = 'point_cloud_processor'
     pkg_dir = get_package_share_directory(pkg_name)
     
-    bag_play_process = ExecuteProcess(
-        cmd=['ros2', 'bag', 'play', '/home/jetson/test_ws/bags/left_full_robot_1',
-             '--loop', '--clock'],
-        output='screen'
-    )
-    
     # Launch arguments
     use_sim_time = LaunchConfiguration('use_sim_time')
     declare_use_sim_time = DeclareLaunchArgument(
@@ -36,7 +30,6 @@ def generate_launch_description():
     
     # TF Tree Publishers
     tf_publishers = [
-        # map -> odom
         Node(
             package='tf2_ros',
             executable='static_transform_publisher',
@@ -46,27 +39,6 @@ def generate_launch_description():
         )
     ]
 
-
-    robot_state_publisher = Node(
-        package='robot_state_publisher',
-        executable='robot_state_publisher',
-        name='robot_state_publisher',
-        output='screen',
-        parameters=[{
-            'use_sim_time': use_sim_time,
-            'robot_description': Command([
-                'xacro ',
-                PathJoinSubstitution([
-                    FindPackageShare(pkg_name),
-                    'urdf',
-                    'duarte.urdf.xacro'
-                ]),
-                ' use_gazebo:=false'  # Add this line
-            ]),
-            'publish_frequency': 50.0
-        }],
-    )
-
     map_transformer_node = Node(
         package=pkg_name,
         executable='map_transformer',
@@ -75,7 +47,6 @@ def generate_launch_description():
         output='screen'
     )
     
-    # Map server node
     map_server = Node(
         package='nav2_map_server',
         executable='map_server',
@@ -95,7 +66,6 @@ def generate_launch_description():
         ]
     )
 
-    # Add a static map republisher
     map_republisher = Node(
         package='point_cloud_processor',
         executable='map_republisher',
@@ -103,21 +73,6 @@ def generate_launch_description():
         parameters=[{'use_sim_time': use_sim_time}]
     )
 
-
-    ekf_node = Node(
-        package='robot_localization',
-        executable='ekf_node',
-        name='ekf_filter_node',
-        output='screen',
-        parameters=[os.path.join(pkg_dir, 'config', 'ekf_config.yaml'),
-                    {'use_sim_time': use_sim_time}],
-        remappings=[
-            ('odometry/filtered', '/fused_odom'),
-            ('/set_pose', '/initialpose')  
-        ]
-    )
-
-    # AMCL node with updated parameters
     amcl = Node(
         package='nav2_amcl',
         executable='amcl',
@@ -128,10 +83,9 @@ def generate_launch_description():
             {
                 'use_sim_time': use_sim_time,
                 'odom_frame_id': 'odom',
-                #'base_frame_id': 'zed_camera_link',
                 'base_frame_id': 'base_link',
                 'global_frame_id': 'map',
-                'transform_tolerance': 1.0
+                'transform_tolerance': 0.2  # 🔧 Reduced from 1.0
             }
         ],
         remappings=[
@@ -141,7 +95,6 @@ def generate_launch_description():
         ]
     )
     
-    # Lifecycle manager
     lifecycle_manager = Node(
         package='nav2_lifecycle_manager',
         executable='lifecycle_manager',
@@ -158,7 +111,6 @@ def generate_launch_description():
         ]
     )
     
-    # Global Localization node
     global_localization = Node(
         package=pkg_name,
         executable='global_localization',
@@ -188,30 +140,40 @@ def generate_launch_description():
         output='screen',
         parameters=[
             ekf_config_path,
-            {'use_sim_time': use_sim_time}  # Add this line
+            {'use_sim_time': use_sim_time}
         ]
     )
 
+    map_creator_node = Node(
+        package='point_cloud_processor',
+        executable='map_creator_ls',
+        name='map_creator_ls',
+        output='screen',
+        parameters=[{
+            'map_resolution': 0.05,
+            'map_width': 40.0,
+            'map_height': 40.0,
+            'map_frame': 'map',
+            'output_dir': '/home/olivas/maps'
+        }]
+    )
 
-    # Delay launching nodes to let /clock start ticking
+    # ⏳ Delay remaining nodes AND bag playback
     delayed_nodes = TimerAction(
-        period=1.0,
+        period=3.0,
         actions=[
-            #robot_state_publisher,
-            #tf_publisher_node,
-            #map_transformer_node,
-            map_server,
-            #map_republisher,
             ekf_node,
-            amcl,
-            lifecycle_manager,
-            global_localization
+            global_localization,
+            # map_creator_node,
         ]
     )
-    
+
     return LaunchDescription([
         declare_use_sim_time,
-        bag_play_process,
         *tf_publishers,
-        delayed_nodes,
+        map_server,
+        amcl,
+        lifecycle_manager,
+        
+        delayed_nodes
     ])

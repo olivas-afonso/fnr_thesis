@@ -21,8 +21,13 @@ find_package(GSL REQUIRED)
 find_package(OpenCV REQUIRED)
 find_package(tf2_geometry_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
+find_package(tf2_eigen REQUIRED) 
 find_package(draco REQUIRED)
 find_package(point_cloud_interfaces REQUIRED)
+find_package(PCL REQUIRED COMPONENTS common)
+find_package(yaml-cpp REQUIRED)
+find_package(rcpputils REQUIRED)
+
 
 find_package(nav2_msgs REQUIRED)
 find_package(std_srvs REQUIRED)   # Add this
@@ -367,6 +372,35 @@ ament_target_dependencies(pose_waiter
   tf2_geometry_msgs
 )
 
+add_executable(map_creator_pc src/map_creator_pc.cpp)
+ament_target_dependencies(map_creator_pc
+  rclcpp
+  sensor_msgs
+  nav_msgs
+  pcl_conversions
+  tf2
+  tf2_ros
+  tf2_geometry_msgs
+  tf2_eigen
+  yaml-cpp
+  rcpputils
+)
+
+#add_executable(map_creator_ls src/map_creator_ls.cpp)
+#ament_target_dependencies(map_creator_ls
+#  rclcpp
+#  sensor_msgs
+#  nav_msgs
+#  pcl_conversions
+#  tf2
+#  tf2_ros
+#  tf2_geometry_msgs
+#  tf2_eigen
+#  yaml-cpp
+#  rcpputils
+#)
+
+
 
 
 
@@ -381,6 +415,8 @@ install(TARGETS
   map_republisher
   dynamic_tf_publisher
   pose_waiter 
+  map_creator_pc
+  #map_creator_ls
   DESTINATION lib/${PROJECT_NAME}
 )
 

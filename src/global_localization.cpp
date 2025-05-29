@@ -143,63 +143,80 @@ sensor_msgs::msg::LaserScan GlobalLocalization::pointCloudToLaserScan(
 {
     sensor_msgs::msg::LaserScan scan;
     scan.header.stamp = cloud_time;
-    scan.header.frame_id = "base_link";  // Use ZED as base frame
+    scan.header.frame_id = "base_link";  // Standard frame for laser scans
 
-    // 1. Load scan parameters
-    double min_range = 0.1, max_range = 10.0;
+    // Get scan parameters
+    double min_range, max_range;
     this->get_parameter("min_scan_range", min_range);
     this->get_parameter("max_scan_range", max_range);
 
-    // 2. LaserScan configuration
+    // LaserScan configuration
     scan.angle_min = -M_PI;
     scan.angle_max = M_PI;
-    scan.angle_increment = M_PI / 180.0;  // 0.5 degrees
-    scan.scan_time = 1.0 / 30.0; // match your data rate (adjust if needed)
+    scan.angle_increment = M_PI / 180.0;  // 1 degree resolution
+    scan.scan_time = 1.0 / 30.0;          // Assuming 30Hz data rate
     scan.range_min = static_cast<float>(min_range);
     scan.range_max = static_cast<float>(max_range);
+    scan.time_increment = scan.scan_time / (2 * M_PI / scan.angle_increment);
 
     size_t num_ranges = static_cast<size_t>((scan.angle_max - scan.angle_min) / scan.angle_increment);
-    scan.ranges.assign(num_ranges, scan.range_max + 1.0f);  // invalid by default (too far)
+    scan.ranges.assign(num_ranges, std::numeric_limits<float>::infinity());  // Initialize with "no detection"
 
-    // 3. Lookup transform from camera cloud frame to zed_camera_link
-    geometry_msgs::msg::TransformStamped tf_camera_to_zed;
+    // Get transform from cloud frame to base_link
+    geometry_msgs::msg::TransformStamped tf_cloud_to_base;
     try {
-        tf_camera_to_zed = tf_buffer_->lookupTransform(
-            "base_link", cloud_frame_id, cloud_time,
+        tf_cloud_to_base = tf_buffer_->lookupTransform(
+            "base_link", 
+            cloud_frame_id, 
+            cloud_time,
             tf2::durationFromSec(0.1));
     } catch (const tf2::TransformException &ex) {
         RCLCPP_ERROR(this->get_logger(),
-            "TF lookup failed from '%s' to '%s': %s",
-            cloud_frame_id.c_str(), "base_link", ex.what());
-        return scan;  // return scan filled with default range values
+            "TF lookup failed from '%s' to 'base_link': %s",
+            cloud_frame_id.c_str(), ex.what());
+        return scan;
     }
 
+    // Convert transform to tf2::Transform for efficient computation
     tf2::Transform tf;
-    tf2::fromMsg(tf_camera_to_zed.transform, tf);
+    tf2::fromMsg(tf_cloud_to_base.transform, tf);
 
-    // 4. Transform and populate scan
+    // Transform points and populate scan
     for (const auto &point : cloud->points) {
-        tf2::Vector3 pt_camera(point.x, point.y, point.z);
-        tf2::Vector3 pt_zed = tf * pt_camera;
+        // Skip invalid points
+        if (!std::isfinite(point.x) || !std::isfinite(point.y) || !std::isfinite(point.z)) {
+            continue;
+        }
 
-        float x = pt_zed.x();
-        float y = pt_zed.y();
+        // Transform point to base_link frame
+        tf2::Vector3 pt_cloud(point.x, point.y, point.z);
+        tf2::Vector3 pt_base = tf * pt_cloud;
+
+        // Calculate range and angle in base_link frame
+        float x = pt_base.x();
+        float y = pt_base.y();
         float range = std::hypot(x, y);
-        if (range < scan.range_min || range > scan.range_max) continue;
+        float angle = std::atan2(y, x);
 
-        float angle = std::atan2(y, x);  
-        if (angle < scan.angle_min || angle > scan.angle_max) continue;
+        // Check if within valid range
+        if (range < scan.range_min || range > scan.range_max) {
+            continue;
+        }
 
-        size_t bin = static_cast<size_t>((angle - scan.angle_min) / scan.angle_increment);
-        if (bin >= num_ranges) continue;
+        // Find appropriate bin
+        int bin = static_cast<int>((angle - scan.angle_min) / scan.angle_increment);
+        if (bin < 0 || bin >= static_cast<int>(num_ranges)) {
+            continue;
+        }
 
+        // Keep shortest range in each bin
         if (range < scan.ranges[bin]) {
             scan.ranges[bin] = range;
         }
     }
 
-    RCLCPP_INFO(this->get_logger(), "Publishing scan with %zu ranges, frame_id: %s", 
-    scan.ranges.size(), scan.header.frame_id.c_str());
+    RCLCPP_DEBUG(this->get_logger(), "Published scan with %zu ranges in frame %s", 
+                scan.ranges.size(), scan.header.frame_id.c_str());
     return scan;
 }
 
@@ -225,11 +242,6 @@ void GlobalLocalization::servoCallback(const std_msgs::msg::Float32::SharedPtr m
 void GlobalLocalization::pointCloudCallback(const sensor_msgs::msg::PointCloud2::SharedPtr msg) {
     // Ensure we have the latest transforms
     try {
-        auto transform = tf_buffer_->lookupTransform(
-            "map", "zed_camera_link",
-            msg->header.stamp,
-            tf2::durationFromSec(0.1));
-        
         // Convert to PCL point cloud
         pcl::PointCloud<pcl::PointXYZRGB>::Ptr cloud(new pcl::PointCloud<pcl::PointXYZRGB>());
         pcl::fromROSMsg(*msg, *cloud);
@@ -240,25 +252,6 @@ void GlobalLocalization::pointCloudCallback(const sensor_msgs::msg::PointCloud2:
             RGBtoHSV(point.r, point.g, point.b, h, s, v);
             if (v > 0.65f && s < 0.2f) {
                 white_cloud->push_back(pcl::PointXYZ(point.x, point.y, point.z));
-                
-                // Transform point to map frame before accumulating
-                geometry_msgs::msg::PointStamped pt_camera, pt_map;
-                pt_camera.header.frame_id = "map";
-                pt_camera.header.stamp = msg->header.stamp;
-                pt_camera.point.x = point.x;
-                pt_camera.point.y = point.y;
-                pt_camera.point.z = point.z;
-                
-                try {
-                    tf_buffer_->transform(pt_camera, pt_map, "map");
-                    accumulated_white_cloud_->push_back(pcl::PointXYZ(
-                        pt_map.point.x, 
-                        pt_map.point.y, 
-                        pt_map.point.z
-                    ));
-                } catch (const tf2::TransformException &ex) {
-                    RCLCPP_WARN(this->get_logger(), "TF transform failed: %s", ex.what());
-                }
             }
         }
 
@@ -274,22 +267,12 @@ void GlobalLocalization::pointCloudCallback(const sensor_msgs::msg::PointCloud2:
             msg->header.stamp);
         scan_publisher_->publish(scan);
 
-        // Your existing cluster processing
-        std::vector<pcl::PointIndices> selected_clusters = clusterWhitePoints(white_cloud, current_pose_.pose);
-        publishClusterMarkers(white_cloud, selected_clusters, current_pose_.pose, cluster_marker_pub_, msg->header.stamp);
 
         // Publish white cloud
         sensor_msgs::msg::PointCloud2 white_msg;
         pcl::toROSMsg(*white_cloud, white_msg);
         white_msg.header = msg->header;
         white_publisher_->publish(white_msg);
-
-        // Publish the accumulated white cloud with persistent QoS
-        sensor_msgs::msg::PointCloud2 persistent_msg;
-        pcl::toROSMsg(*accumulated_white_cloud_, persistent_msg);
-        persistent_msg.header.frame_id = "map";  // Or "map" if you transform it
-        persistent_msg.header.stamp = this->now();
-        persistent_white_publisher_->publish(persistent_msg);
 
     } catch (const tf2::TransformException &ex) {
         RCLCPP_WARN(this->get_logger(), "TF lookup failed: %s", ex.what());

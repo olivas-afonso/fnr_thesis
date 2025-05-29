@@ -41,7 +41,7 @@ amcl:
     update_min_a: 0.1     # Minimum angular movement to update filter
     
     # Tolerance
-    transform_tolerance: 1.0  # Increased from 0.5 for more flexibility
+    transform_tolerance: 0.2  # Increased from 0.5 for more flexibility
     transform_cache_time: 20.0
     use_pose_with_covariance_stamped: false
     

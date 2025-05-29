@@ -17,16 +17,14 @@ public:
     : Node("point_cloud_processor", options),
     tf_buffer_(std::make_shared<tf2_ros::Buffer>(
         this->get_clock(), 
-        tf2::Duration(std::chrono::seconds(20))  // Increased from 10 seconds to 20
+        tf2::Duration(std::chrono::seconds(20))
     )),
-      tf_listener_(*tf_buffer_, this)
+    tf_listener_(*tf_buffer_, this)
     {
-        // Initialize without declaring use_sim_time again
         if (!this->has_parameter("use_sim_time")) {
             this->declare_parameter("use_sim_time", false);
         }
 
-        // Create subscription
         subscription_ = this->create_subscription<sensor_msgs::msg::PointCloud2>(
             "/zed/zed_node/point_cloud/cloud_registered", 10,
             std::bind(&PointCloudProcessor::pointCloudCallback, this, std::placeholders::_1));
@@ -57,38 +55,52 @@ private:
     bool has_camera_height_ = false;
 
     void pointCloudCallback(const sensor_msgs::msg::PointCloud2::SharedPtr msg) {
-        // Throttle processing
-        auto now = this->now();
-        if ((now - last_processed_time_).seconds() < min_processing_interval_) {
+    
+        // Transform the cloud to base_link frame first
+        sensor_msgs::msg::PointCloud2 transformed_cloud;
+        try {
+            // Lookup transform from camera frame to base_link
+            auto transform = tf_buffer_->lookupTransform(
+                "base_link", 
+                msg->header.frame_id,
+                msg->header.stamp,
+                tf2::durationFromSec(0.1));
+
+            // Transform the entire cloud message
+            tf2::doTransform(*msg, transformed_cloud, transform);
+            transformed_cloud.header.frame_id = "base_link";
+            
+            // Process the transformed cloud
+            processPointCloud(std::make_shared<sensor_msgs::msg::PointCloud2>(transformed_cloud));
+            
+        } catch (const tf2::TransformException &ex) {
+            RCLCPP_ERROR(this->get_logger(), "TF transform failed: %s", ex.what());
             return;
         }
-        last_processed_time_ = now;
-    
-        processPointCloud(msg);
     }
 
     void processPointCloud(sensor_msgs::msg::PointCloud2::SharedPtr msg) {
         if (msg->data.empty()) {
-            RCLCPP_WARN(this->get_logger(), "Received an empty point cloud. Waiting for valid data...");
+            RCLCPP_WARN(this->get_logger(), "Received an empty point cloud");
             return;
         }
         
-        // Convert ROS2 PointCloud2 to PCL point cloud
+        // Convert to PCL (already in base_link frame now)
         pcl::PointCloud<pcl::PointXYZRGB>::Ptr cloud(new pcl::PointCloud<pcl::PointXYZRGB>());
         pcl::fromROSMsg(*msg, *cloud);
 
-        //Downsampling
+        // Downsampling
         pcl::VoxelGrid<pcl::PointXYZRGB> voxel_filter;
         voxel_filter.setInputCloud(cloud);
         voxel_filter.setLeafSize(0.02f, 0.02f, 0.02f);
         pcl::PointCloud<pcl::PointXYZRGB>::Ptr downsampled_cloud(new pcl::PointCloud<pcl::PointXYZRGB>());
         voxel_filter.filter(*downsampled_cloud);
 
-        // Apply height filter
+        // Apply height filter (now relative to base_link)
         pcl::PassThrough<pcl::PointXYZRGB> z_filter;
         z_filter.setInputCloud(downsampled_cloud);
         z_filter.setFilterFieldName("z");
-        z_filter.setFilterLimits(-1.0, 0.5); // Relative to camera
+        z_filter.setFilterLimits(-1.0, 0.5); // Adjust these values as needed
         
         pcl::PointCloud<pcl::PointXYZRGB>::Ptr height_filtered_cloud(new pcl::PointCloud<pcl::PointXYZRGB>());
         z_filter.filter(*height_filtered_cloud);
@@ -171,15 +183,15 @@ private:
         }
             */
 
-        // Publish results
+
         sensor_msgs::msg::PointCloud2 ground_msg;
         pcl::toROSMsg(*ground_cloud, ground_msg);
-        ground_msg.header = msg->header; // Keep original frame_id
+        ground_msg.header = msg->header; // Will be base_link
         ground_publisher_->publish(ground_msg);
         
         sensor_msgs::msg::PointCloud2 non_ground_msg;
         pcl::toROSMsg(*non_ground_cloud, non_ground_msg);
-        non_ground_msg.header = msg->header; // Keep original frame_id
+        non_ground_msg.header = msg->header; // Will be base_link
         nonground_publisher_->publish(non_ground_msg);
     }
 };
