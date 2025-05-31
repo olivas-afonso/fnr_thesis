@@ -85,7 +85,7 @@ def generate_launch_description():
                 'odom_frame_id': 'odom',
                 'base_frame_id': 'base_link',
                 'global_frame_id': 'map',
-                'transform_tolerance': 0.2  # 🔧 Reduced from 1.0
+                'transform_tolerance': 0.2  
             }
         ],
         remappings=[
@@ -158,7 +158,7 @@ def generate_launch_description():
         }]
     )
 
-    # ⏳ Delay remaining nodes AND bag playback
+    # Delay remaining nodes AND bag playback
     delayed_nodes = TimerAction(
         period=3.0,
         actions=[

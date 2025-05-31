@@ -2,7 +2,7 @@ ekf_localization_node:
   ros__parameters:
     frequency: 30.0
     sensor_timeout: 0.25
-    two_d_mode: false
+    two_d_mode: true
     publish_tf: true
 
     map_frame: map
@@ -19,12 +19,26 @@ ekf_localization_node:
 
     odom0_differential: false
     odom0_relative: false
+    odom0_nodelay: false
 
     odom1: /vesc/odom
-    odom1_config: [true, true, false,
+    odom1_config: [false, false, false,
                    false, false, true,
-                   false, false, false,
+                   true, false, false,
                    false, false, false,
                    false, false, false]
-    odom1_differential: true
+    odom1_differential: false
     odom1_relative: false
+    odom1_nodelay: false
+
+    imu0: sensors/imu/raw
+    imu0_config: [false, false, false,
+                  false,  false,  true,
+                  false, false, false,
+                  false,  false,  true,
+                  false,  false,  false]
+    imu0_nodelay: false
+    imu0_differential: false
+    imu0_relative: true
+    imu0_queue_size: 5
+    imu0_remove_gravitational_acceleration: true
