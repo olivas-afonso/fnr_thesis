@@ -71,21 +71,7 @@ def launch_setup(context, *args, **kwargs):
         'use_zed_localization:=', use_zed_localization,
     ])
 
-    # RESOLVE the absolute path to RViz config
-    rviz_config_path = os.path.join(
-        get_package_share_directory('point_cloud_processor'),
-        'rviz2',
-        'rviz_config.rviz'
-    )
 
-    # RVIZ2 node
-    rviz2_node = Node(
-        package='rviz2',
-        executable='rviz2',
-        name='rviz2',
-        output='screen',
-        arguments=['-d', rviz_config_path],
-    )
 
     # Robot State Publisher
     rsp_node = Node(
@@ -101,14 +87,6 @@ def launch_setup(context, *args, **kwargs):
         package='joint_state_publisher',
         executable='joint_state_publisher',
         name='scoutm_joint_state_publisher'
-    )
-
-    ekf_node = Node(
-        package='robot_localization',
-        executable='ekf_node',
-        name='ekf_localization_node',
-        output='screen',
-        parameters=[ekf_config_path]
     )
 
     return [rsp_node, jsp_node] #, rviz2_node, ekf_nod]

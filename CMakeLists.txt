@@ -402,7 +402,10 @@ ament_target_dependencies(map_creator_pc
 
 
 
-
+install(PROGRAMS
+  scripts/visualize_imu.py
+  DESTINATION lib/${PROJECT_NAME}
+)
 
 
 install(TARGETS
