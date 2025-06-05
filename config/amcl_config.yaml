@@ -1,16 +1,16 @@
 amcl:
   ros__parameters:
-    use_sim_time: true
+    use_sim_time: false
     # Motion model noise parameters
     robot_model_type: "nav2_amcl::DifferentialMotionModel"
-    alpha1: 0.001    # Rotation noise from rotation  
-    alpha2: 0.001    # Rotation noise from translation  
-    alpha3: 0.002    # Translation noise from translation  
-    alpha4: 0.001    # Translation noise from rotation  
+    alpha1: 0.0001    # Rotation noise from rotation  
+    alpha2: 0.0001    # Rotation noise from translation  
+    alpha3: 0.0002    # Translation noise from translation  
+    alpha4: 0.0001    # Translation noise from rotation  
     
     # Particle filter settings
-    min_particles: 1000
-    max_particles: 3000
+    min_particles: 300
+    max_particles: 1000
     recovery_alpha_slow: 0.001
     recovery_alpha_fast: 0.1
     
@@ -19,13 +19,13 @@ amcl:
     laser_max_range: 10.0           # Must match your scan publisher
     laser_min_range: 0.1            # Must match your scan publisher
     
-    max_beams: 360            
+    max_beams: 120            
 
     #z_hit: 0.1
     #z_rand: 0.9
-    z_hit: 0.9 # Weight for hit component
-    z_rand: 0.1 # Weight for the random component
-    sigma_hit: 0.3 # Standard deviation for Gaussian model
+    z_hit: 0.2 # Weight for hit component
+    z_rand: 0.5 # Weight for the random component
+    sigma_hit: 0.5 # Standard deviation for Gaussian model
 
     laser_likelihood_max_dist: 2.0 
 
@@ -37,7 +37,7 @@ amcl:
 
     
     # Update thresholds
-    update_min_d: 0.05    # Minimum translational movement to update filter
+    update_min_d: 0.1    # Minimum translational movement to update filter
     update_min_a: 0.1     # Minimum angular movement to update filter
     
     # Tolerance

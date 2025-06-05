@@ -28,6 +28,17 @@ def generate_launch_description():
         description='Use simulation clock if true'
     )
     
+
+    point_cloud_processor_node = Node(
+        package=pkg_name,
+        executable='point_cloud_processor',
+        name='point_cloud_processor',
+        output='screen',
+        parameters=[{
+            'use_sim_time': use_sim_time
+        }]
+    )
+
     # TF Tree Publishers
     tf_publishers = [
         Node(
@@ -170,10 +181,10 @@ def generate_launch_description():
 
     return LaunchDescription([
         declare_use_sim_time,
+        point_cloud_processor_node,
         *tf_publishers,
         map_server,
         amcl,
         lifecycle_manager,
-        
         delayed_nodes
     ])

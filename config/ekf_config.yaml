@@ -35,17 +35,4 @@ ekf_localization_node:
     odom1_queue_size: 2
     odom1_nodelay: false
 
-    imu0: sensors/imu/raw
-    imu0_config: [false, false, false,   # x, y, z position
-                  false,  false,  true,  # roll, pitch, yaw
-                  false, false, false,   # x, y, z velocity
-                  false,  false,  true,  # roll, pitch, yaw velocity
-                  false,  false,  false] # x, y, z acceleration
-                  
-    imu0_nodelay: false
-    imu0_differential: false
-    imu0_relative: true
-    imu0_queue_size: 5
-    imu0_remove_gravitational_acceleration: true
-
   
