@@ -101,6 +101,7 @@ def generate_launch_description():
         ],
         remappings=[
             ('/scan', '/cluster_scan'),
+            ('/odom', '/odometry/filtered'),
             ('/tf', 'tf'),
             ('/tf_static', 'tf_static')
         ]

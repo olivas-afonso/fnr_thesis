@@ -1,0 +1,45 @@
+slam_toolbox:
+  ros__parameters:
+    # Solver Configuration (keep defaults for accuracy)
+    solver_plugin: solver_plugins::CeresSolver
+    ceres_linear_solver: SPARSE_NORMAL_CHOLESKY
+    ceres_preconditioner: SCHUR_JACOBI
+    ceres_trust_strategy: LEVENBERG_MARQUARDT
+    ceres_dogleg_type: TRADITIONAL_DOGLEG
+    ceres_loss_function: None
+
+    # Frame Configuration
+    odom_frame: odom
+    map_frame: map
+    base_frame: base_link  # Changed from base_footprint
+    scan_topic: /cluster_scan  # Your custom scan topic
+
+    # Core Behavior
+    mode: mapping
+    debug_logging: true  # Enable for diagnostics
+    throttle_scans: 1  # Process every scan
+    enable_interactive_mode: true
+
+    # Odometry Trust Parameters (Key Changes)
+    use_scan_matching: false  # Still use scans but prioritize odometry
+    minimum_time_interval: 0.5  # Don't process scans too frequently
+    minimum_travel_distance: 0.3  # Lower than default (0.5)
+    minimum_travel_heading: 0.3  # Lower than default (0.5)
+
+    # Scan Matching Tuning (Less aggressive correction)
+    link_match_minimum_response_fine: 0.95  # Default: 0.1 (HIGHER = trust scans less)
+    link_scan_maximum_distance: 0.3  # Default: 1.5 (meters)
+    correlation_search_space_dimension: 0.1  # Default: 0.5 (smaller = tighter odometry)
+    correlation_search_space_angular: 0.05  # Default: none (radians, ~11°)
+
+    # Loop Closure (Less aggressive to prioritize odometry)
+    do_loop_closing: false  # Keep enabled but tuned
+    loop_match_minimum_response_fine: 0.95  # Default: 0.45 (HIGHER = stricter loops)
+    loop_search_maximum_distance: 2.0  # Default: 3.0 (meters)
+
+    # Map Settings
+    resolution: 0.05
+    occupancy_threshold: 0.1
+    transform_publish_period: 0.02
+    map_update_interval: 5.0
+    max_laser_range: 10.0  # Match your sensor

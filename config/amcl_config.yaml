@@ -12,7 +12,7 @@ amcl:
     min_particles: 300
     max_particles: 1000
     recovery_alpha_slow: 0.001
-    recovery_alpha_fast: 0.1
+    recovery_alpha_fast: 0.3
     
     # Laser model settings
     laser_model_type: "likelihood_field"
@@ -23,9 +23,9 @@ amcl:
 
     #z_hit: 0.1
     #z_rand: 0.9
-    z_hit: 0.2 # Weight for hit component
-    z_rand: 0.5 # Weight for the random component
-    sigma_hit: 0.5 # Standard deviation for Gaussian model
+    z_hit: 0.9 # Weight for hit component
+    z_rand: 0.1 # Weight for the random component
+    sigma_hit: 0.1 # Standard deviation for Gaussian model
 
     laser_likelihood_max_dist: 2.0 
 
@@ -37,8 +37,8 @@ amcl:
 
     
     # Update thresholds
-    update_min_d: 0.1    # Minimum translational movement to update filter
-    update_min_a: 0.1     # Minimum angular movement to update filter
+    update_min_d: 0.01    # Minimum translational movement to update filter
+    update_min_a: 0.05     # Minimum angular movement to update filter
     
     # Tolerance
     transform_tolerance: 0.2  # Increased from 0.5 for more flexibility

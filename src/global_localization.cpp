@@ -68,7 +68,7 @@ GlobalLocalization::GlobalLocalization(const rclcpp::NodeOptions & options)
 
     scan_publisher_ = this->create_publisher<sensor_msgs::msg::LaserScan>(
         "/cluster_scan", 
-        rclcpp::QoS(10).best_effort()  // Match AMCL's default
+        rclcpp::QoS(10).reliable()  // Match AMCL's default
     );
 
     tf_buffer_ = std::make_shared<tf2_ros::Buffer>(this->get_clock());
@@ -151,8 +151,8 @@ sensor_msgs::msg::LaserScan GlobalLocalization::pointCloudToLaserScan(
     this->get_parameter("max_scan_range", max_range);
 
     // LaserScan configuration
-    scan.angle_min = -M_PI;
-    scan.angle_max = M_PI;
+    scan.angle_min = -M_PI * 40.0 / 180.0;  // -40º
+    scan.angle_max =  M_PI * 40.0 / 180.0;  // +40º
     scan.angle_increment = M_PI / 180.0;  // 1 degree resolution
     scan.scan_time = 1.0 / 30.0;          // Assuming 30Hz data rate
     scan.range_min = static_cast<float>(min_range);
