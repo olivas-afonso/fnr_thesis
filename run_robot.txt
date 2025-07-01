@@ -12,3 +12,17 @@ important notes:
 there is no map topic, to be done afterwards.
 ekf odom fusion is only working with 1 odometry (camera), missing the other one.
 should experiment with if better with or without imu (prefusion).
+
+
+NEW TO RUN THE WHOLE GLOBAL LOCALIZATION
+
+
+THIS LAUNCHES THE CAMERA, VESC, URDF AND EKF ODOM FUSION
+ros2 launch point_cloud_processor sensors_init.launch.py launch_ekf:=true launch_camera:=true use_sim_time:=false
+
+THIS LAUNCHES THE MAP SERVER, FAKE LASER, AND AMCL
+ros2 launch point_cloud_processor global_localization.launch.py use_sim_time:=false
+
+
+
+
