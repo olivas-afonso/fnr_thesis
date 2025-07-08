@@ -156,25 +156,12 @@ def generate_launch_description():
         ]
     )
 
-    map_creator_node = Node(
-        package='point_cloud_processor',
-        executable='map_creator_ls',
-        name='map_creator_ls',
-        output='screen',
-        parameters=[{
-            'map_resolution': 0.05,
-            'map_width': 40.0,
-            'map_height': 40.0,
-            'map_frame': 'map',
-            'output_dir': '/home/olivas/maps'
-        }]
-    )
 
     # Delay remaining nodes AND bag playback
     delayed_nodes = TimerAction(
         period=3.0,
         actions=[
-            ekf_node,
+            #ekf_node,
             global_localization,
             # map_creator_node,
         ]
@@ -183,7 +170,7 @@ def generate_launch_description():
     return LaunchDescription([
         declare_use_sim_time,
         point_cloud_processor_node,
-        *tf_publishers,
+        #*tf_publishers,
         map_server,
         amcl,
         lifecycle_manager,

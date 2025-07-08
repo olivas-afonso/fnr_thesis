@@ -9,8 +9,8 @@ amcl:
     alpha4: 0.0001    # Translation noise from rotation  
     
     # Particle filter settings
-    min_particles: 300
-    max_particles: 1000
+    min_particles: 100
+    max_particles: 500
     recovery_alpha_slow: 0.001
     recovery_alpha_fast: 0.3
     
@@ -19,7 +19,7 @@ amcl:
     laser_max_range: 10.0           # Must match your scan publisher
     laser_min_range: 0.1            # Must match your scan publisher
     
-    max_beams: 120            
+    max_beams: 60            
 
     #z_hit: 0.1
     #z_rand: 0.9
@@ -27,7 +27,7 @@ amcl:
     z_rand: 0.1 # Weight for the random component
     sigma_hit: 0.1 # Standard deviation for Gaussian model
 
-    laser_likelihood_max_dist: 2.0 
+    laser_likelihood_max_dist: 1.5
 
     #odom topic
     odom_frame_id: "odom"
@@ -37,11 +37,11 @@ amcl:
 
     
     # Update thresholds
-    update_min_d: 0.01    # Minimum translational movement to update filter
+    update_min_d: 0.05    # Minimum translational movement to update filter
     update_min_a: 0.05     # Minimum angular movement to update filter
     
     # Tolerance
-    transform_tolerance: 0.2  # Increased from 0.5 for more flexibility
+    transform_tolerance: 0.1
     transform_cache_time: 20.0
     use_pose_with_covariance_stamped: false
     

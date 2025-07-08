@@ -3,4 +3,4 @@ resolution: 0.026  # meters/pixel
 origin: [-1.55, 5.15, -1.5708]
 occupied_thresh: 0.5
 free_thresh: 0.5
-negate: 1
+negate: 0
