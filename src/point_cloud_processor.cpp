@@ -55,7 +55,7 @@ private:
     bool has_camera_height_ = false;
 
     void pointCloudCallback(const sensor_msgs::msg::PointCloud2::SharedPtr msg) {
-    
+        /*
         // Transform the cloud to base_link frame first
         sensor_msgs::msg::PointCloud2 transformed_cloud;
         try {
@@ -77,6 +77,8 @@ private:
             RCLCPP_ERROR(this->get_logger(), "TF transform failed: %s", ex.what());
             return;
         }
+            */
+        processPointCloud(msg);
     }
 
     void processPointCloud(sensor_msgs::msg::PointCloud2::SharedPtr msg) {
@@ -97,6 +99,7 @@ private:
         voxel_filter.filter(*downsampled_cloud);
 
         // Apply height filter (now relative to base_link)
+        
         pcl::PassThrough<pcl::PointXYZRGB> z_filter;
         z_filter.setInputCloud(downsampled_cloud);
         z_filter.setFilterFieldName("z");
@@ -110,8 +113,8 @@ private:
         seg.setOptimizeCoefficients(true);
         seg.setModelType(pcl::SACMODEL_PERPENDICULAR_PLANE);
         seg.setMethodType(pcl::SAC_RANSAC);
-        seg.setDistanceThreshold(0.03);
-        seg.setMaxIterations(500);
+        seg.setDistanceThreshold(0.05);
+        seg.setMaxIterations(100);
         seg.setAxis(Eigen::Vector3f(0.0, 0.0, 1.0));
         seg.setEpsAngle(10.0 * M_PI / 180.0);
         seg.setInputCloud(height_filtered_cloud);
@@ -120,80 +123,60 @@ private:
         pcl::ModelCoefficients::Ptr ground_coefficients(new pcl::ModelCoefficients());
         seg.segment(*ground_inliers, *ground_coefficients);
 
-        if (ground_inliers->indices.empty()) {
-            RCLCPP_WARN(this->get_logger(), "No ground plane found! Using last height estimate");
-            if (!has_ground_height_) return;
-        } else {
+        if (!ground_inliers->indices.empty()) {
+            // Use a subset of points for faster median calculation
             std::vector<float> z_values;
-            for (const auto& idx : ground_inliers->indices) {
-                z_values.push_back(height_filtered_cloud->points[idx].z);
+            size_t step = std::max(1, static_cast<int>(ground_inliers->indices.size() / 100));
+            for (size_t i = 0; i < ground_inliers->indices.size(); i += step) {
+                z_values.push_back(height_filtered_cloud->points[ground_inliers->indices[i]].z);
             }
-            std::sort(z_values.begin(), z_values.end());
-            double current_height = z_values[z_values.size() / 2];
+            
+            // Partial sort instead of full sort for median
+            auto mid = z_values.begin() + z_values.size() / 2;
+            std::nth_element(z_values.begin(), mid, z_values.end());
+            double current_height = *mid;
 
             if (has_ground_height_) {
                 if (fabs(current_height - estimated_ground_height_) < max_ground_height_change_) {
                     estimated_ground_height_ = ground_height_alpha_ * current_height + 
-                                             (1.0 - ground_height_alpha_) * estimated_ground_height_;
+                                            (1.0 - ground_height_alpha_) * estimated_ground_height_;
                 }
             } else {
                 estimated_ground_height_ = current_height;
                 has_ground_height_ = true;
             }
+        } else if (!has_ground_height_) {
+            return;
         }
 
-        // Extract ground points
+        // Extract ground and non-ground points
         pcl::PointCloud<pcl::PointXYZRGB>::Ptr ground_cloud(new pcl::PointCloud<pcl::PointXYZRGB>());
-        pcl::ExtractIndices<pcl::PointXYZRGB> extract;
-        extract.setInputCloud(height_filtered_cloud);
-        extract.setIndices(ground_inliers);
-        extract.setNegative(false);
-        extract.filter(*ground_cloud);
-
-        // Extract non-ground points
         pcl::PointCloud<pcl::PointXYZRGB>::Ptr non_ground_cloud(new pcl::PointCloud<pcl::PointXYZRGB>());
-        extract.setNegative(true);
-        extract.filter(*non_ground_cloud);
-
-        /*
-        // Get camera height with fallback
-        double camera_height = 0.0;
-        try {
-            auto tf = tf_buffer_->lookupTransform("map", "zed_camera_link", tf2::TimePointZero);
-            camera_height = tf.transform.translation.z;
-            last_known_camera_height_ = camera_height;
-            has_camera_height_ = true;
-        } catch (...) {
-            if (has_camera_height_) {
-                camera_height = last_known_camera_height_;
-                RCLCPP_WARN(this->get_logger(), "Using last known camera height: %.2f", camera_height);
-            } else {
-                camera_height = 0.5;
-                RCLCPP_ERROR(this->get_logger(), "Using default camera height");
-            }
-        }
+        {
+            pcl::ExtractIndices<pcl::PointXYZRGB> extract;
+            extract.setInputCloud(height_filtered_cloud);
+            extract.setIndices(ground_inliers);
             
-
-        // Normalize ground plane
-        pcl::PointCloud<pcl::PointXYZRGB>::Ptr normalized_ground(new pcl::PointCloud<pcl::PointXYZRGB>());
-        for (const auto& pt : *ground_cloud) {
-            pcl::PointXYZRGB new_pt = pt;
-            new_pt.z = camera_height;
-            normalized_ground->push_back(new_pt);
+            // Ground points
+            extract.setNegative(false);
+            extract.filter(*ground_cloud);
+            
+            // Non-ground points (original cloud for better obstacle detection)
+            extract.setNegative(true);
+            extract.filter(*non_ground_cloud);
         }
-            */
 
-
+        // Publish results
         sensor_msgs::msg::PointCloud2 ground_msg;
         pcl::toROSMsg(*ground_cloud, ground_msg);
-        ground_msg.header = msg->header; // Will be base_link
+        ground_msg.header = msg->header;
         ground_publisher_->publish(ground_msg);
         
         sensor_msgs::msg::PointCloud2 non_ground_msg;
         pcl::toROSMsg(*non_ground_cloud, non_ground_msg);
-        non_ground_msg.header = msg->header; // Will be base_link
+        non_ground_msg.header = msg->header;
         nonground_publisher_->publish(non_ground_msg);
-    }
+        }
 };
 
 int main(int argc, char **argv) {
