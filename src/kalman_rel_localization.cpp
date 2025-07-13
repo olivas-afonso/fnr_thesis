@@ -2,6 +2,9 @@
 #include "kalman_rel_localization/utilities.hpp"
 #include "kalman_rel_localization/visualization.hpp"
 
+#include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
+
+
 
 using namespace lane_detection_utils;
 using namespace lane_detection_visualization;
@@ -150,7 +153,7 @@ void KalmanRelLocalization::pointCloudCallback(const sensor_msgs::msg::PointClou
             }
         }
     }
-    
+
     last_valid_dt_ = dt; // Store for future use
     last_update_time_ = current_time;
 
@@ -178,6 +181,36 @@ void KalmanRelLocalization::pointCloudCallback(const sensor_msgs::msg::PointClou
         }
     }
 
+    try {
+        geometry_msgs::msg::TransformStamped transform = 
+            tf_buffer_->lookupTransform("base_link", msg->header.frame_id, msg->header.stamp);
+        
+        pcl::PointCloud<pcl::PointXYZ>::Ptr transformed_white_cloud(new pcl::PointCloud<pcl::PointXYZ>());
+        for (const auto& point : white_cloud->points) {
+            geometry_msgs::msg::PointStamped pt_in, pt_out;
+            pt_in.header = msg->header;
+            pt_in.point.x = point.x;
+            pt_in.point.y = point.y;
+            pt_in.point.z = point.z;
+            
+            tf2::doTransform(pt_in, pt_out, transform);
+            
+            transformed_white_cloud->push_back(pcl::PointXYZ(
+                pt_out.point.x,
+                pt_out.point.y,
+                pt_out.point.z
+            ));
+        }
+        white_cloud = transformed_white_cloud;
+        white_cloud->header.frame_id = "base_link"; 
+    } catch (const tf2::TransformException &ex) {
+        RCLCPP_ERROR(this->get_logger(), "TF transform failed: %s", ex.what());
+        return;
+    }
+
+     RCLCPP_WARN(this->get_logger(), "Input cloud frame: %s", white_cloud->header.frame_id.c_str());
+    
+
     publishCameraAxes(current_pose_, marker_pub_, current_time);
 
     if (white_cloud->empty()) {
@@ -192,9 +225,10 @@ void KalmanRelLocalization::pointCloudCallback(const sensor_msgs::msg::PointClou
     publishClusterMarkers(white_cloud, selected_clusters, current_pose_.pose, cluster_marker_pub_, current_time);
 
     sensor_msgs::msg::PointCloud2 white_msg;
-        pcl::toROSMsg(*white_cloud, white_msg);
-        white_msg.header = msg->header;
-        white_publisher_->publish(white_msg);
+    pcl::toROSMsg(*white_cloud, white_msg);
+    white_msg.header.frame_id = "base_link";  // Ensure this is set
+    white_msg.header.stamp = msg->header.stamp;  // Keep original timestamp
+    white_publisher_->publish(white_msg);
 
         pcl::PointIndices rightmost_cluster, leftmost_cluster;
         Eigen::Vector2f left_observed, right_observed;
@@ -240,21 +274,13 @@ void KalmanRelLocalization::pointCloudCallback(const sensor_msgs::msg::PointClou
                 // Analyze all points in the cluster
                 for (int idx : cluster.indices) {
                     const auto& point = white_cloud->points[idx];
-                    Eigen::Vector3f relative_pos(
-                        point.x - camera_position[0],
-                        point.y - camera_position[1],
-                        point.z - camera_position[2]);
-        
-                    // Transform to camera frame
-                    float y_cam = -relative_pos[0] * sin_yaw + relative_pos[1] * cos_yaw;
-                    total_y_cam += y_cam;
-        
-                    // Vote based on point's position
-                    if (y_cam > 0) {
+                    // Points are already in base_link frame
+                    if (point.y > 0) {  // Simple left/right check in base_link frame
                         left_votes++;
                     } else {
                         right_votes++;
                     }
+                    total_y_cam += point.y;  // Accumulate y position
                 }
         
                 // Calculate cluster score (positive for left, negative for right)
@@ -401,7 +427,7 @@ void KalmanRelLocalization::pointCloudCallback(const sensor_msgs::msg::PointClou
         // Create middle lane marker
         visualization_msgs::msg::MarkerArray middle_markers;
         visualization_msgs::msg::Marker middle_marker;
-        middle_marker.header.frame_id = "z";
+        middle_marker.header.frame_id = "base_link";
         middle_marker.header.stamp = this->now();
         middle_marker.ns = "middle_lane";
         middle_marker.id = 0;
@@ -417,17 +443,17 @@ void KalmanRelLocalization::pointCloudCallback(const sensor_msgs::msg::PointClou
         // Generate points for middle curve
         float x_min_cam = 0.5f;
         float x_max_cam = 3.0f;
+        
         for (float x_cam = x_min_cam; x_cam <= x_max_cam; x_cam += 0.1f) {
             float y_cam = middle_coeffs_cam[0]*x_cam*x_cam + middle_coeffs_cam[1]*x_cam + middle_coeffs_cam[2];
-            Eigen::Vector3f p_cam(x_cam, y_cam, 0);
-            Eigen::Vector3f p_map = rot_eigen * p_cam + cam_pos;
             
             geometry_msgs::msg::Point p;
-            p.x = p_map.x();
-            p.y = p_map.y();
-            p.z = 0;
+            p.x = x_cam;  // Forward in camera frame
+            p.y = y_cam;  // Lateral position
+            p.z = 0;      // Ground plane
             middle_marker.points.push_back(p);
         }
+
         middle_markers.markers.push_back(middle_marker);
         middle_lane_->publish(middle_markers);
 
@@ -472,7 +498,7 @@ void KalmanRelLocalization::initializeFilter()
     // Reset to initial state
     state = Eigen::VectorXf::Zero(6);
     state << 0.00, 0.0, 0.7,    // Left lane
-                0.00, 0.0, -0-7;    // Right lane
+                0.00, 0.0, -0.7;    // Right lane
     
     // Reset covariance
     P = Eigen::MatrixXf::Identity(6,6) * 0.1;

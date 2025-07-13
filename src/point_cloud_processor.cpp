@@ -55,29 +55,7 @@ private:
     bool has_camera_height_ = false;
 
     void pointCloudCallback(const sensor_msgs::msg::PointCloud2::SharedPtr msg) {
-        /*
-        // Transform the cloud to base_link frame first
-        sensor_msgs::msg::PointCloud2 transformed_cloud;
-        try {
-            // Lookup transform from camera frame to base_link
-            auto transform = tf_buffer_->lookupTransform(
-                "base_link", 
-                msg->header.frame_id,
-                msg->header.stamp,
-                tf2::durationFromSec(0.1));
 
-            // Transform the entire cloud message
-            tf2::doTransform(*msg, transformed_cloud, transform);
-            transformed_cloud.header.frame_id = "base_link";
-            
-            // Process the transformed cloud
-            processPointCloud(std::make_shared<sensor_msgs::msg::PointCloud2>(transformed_cloud));
-            
-        } catch (const tf2::TransformException &ex) {
-            RCLCPP_ERROR(this->get_logger(), "TF transform failed: %s", ex.what());
-            return;
-        }
-            */
         processPointCloud(msg);
     }
 

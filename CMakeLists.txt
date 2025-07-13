@@ -89,6 +89,8 @@ target_link_libraries(kalman_rel_localization
   Eigen3::Eigen
   tf2::tf2
   tf2_ros::tf2_ros
+  ${tf2_geometry_msgs_LIBRARIES}
+  ${tf2_LIBRARIES}
 )
 
 

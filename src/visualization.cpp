@@ -45,21 +45,18 @@ namespace lane_detection_visualization {
         // 3. Determine visualization range in camera X coordinates
         auto getCameraXRange = [&](const pcl::PointIndices& indices) {
             if (indices.indices.empty()) {
-                return std::make_pair(-5.0f, 5.0f); // Default 10m forward
+                return std::make_pair(-5.0f, 5.0f);
             }
-    
+
             float min_x = std::numeric_limits<float>::max();
             float max_x = std::numeric_limits<float>::lowest();
             
             for (int idx : indices.indices) {
                 const auto& point = white_cloud->points[idx];
-                Eigen::Vector3f pt_map(point.x, point.y, point.z);
-                Eigen::Vector3f pt_cam = rot_eigen.transpose() * (pt_map - cam_pos);
-                
-                min_x = std::min(min_x, pt_cam.x());
-                max_x = std::max(max_x, pt_cam.x());
+                min_x = std::min(min_x, point.x);  // Use raw x coordinate
+                max_x = std::max(max_x, point.x);
             }
-            return std::make_pair(min_x - 0.0f, max_x + 0.0f); // Add small padding
+            return std::make_pair(min_x - 0.0f, max_x + 0.0f);
         };
     
         auto [left_min_x, left_max_x] = getCameraXRange(left_cluster_indices);
@@ -67,7 +64,7 @@ namespace lane_detection_visualization {
     
         // 4. Create left lane marker (green for detected, blue for estimated)
         visualization_msgs::msg::Marker left_marker;
-        left_marker.header.frame_id = "map";
+        left_marker.header.frame_id = "base_link";
         left_marker.header.stamp = current_time;
         left_marker.ns = "kalman_lanes";
         left_marker.id = 0;
@@ -87,34 +84,24 @@ namespace lane_detection_visualization {
         right_marker.color.b = right_detected ? 0.0 : 0.5;
     
         // 6. Generate points for left lane
-        const float step_size = 0.2f; // meters between points
+        const float step_size = 0.2f;
         for (float x_cam = left_min_x; x_cam <= left_max_x; x_cam += step_size) {
-            // Calculate y in camera frame
             float y_cam = left_coeffs[0]*x_cam*x_cam + left_coeffs[1]*x_cam + left_coeffs[2];
             
-            // Transform to map frame
-            Eigen::Vector3f p_cam(x_cam, y_cam, 0);
-            Eigen::Vector3f p_map = rot_eigen * p_cam + cam_pos;
-            
             geometry_msgs::msg::Point p;
-            p.x = p_map.x();
-            p.y = p_map.y();
+            p.x = x_cam;  // Directly use camera-relative coordinates
+            p.y = y_cam;
             p.z = 0;
             left_marker.points.push_back(p);
         }
-    
+
         // 7. Generate points for right lane
         for (float x_cam = right_min_x; x_cam <= right_max_x; x_cam += step_size) {
-            // Calculate y in camera frame
             float y_cam = right_coeffs[0]*x_cam*x_cam + right_coeffs[1]*x_cam + right_coeffs[2];
             
-            // Transform to map frame
-            Eigen::Vector3f p_cam(x_cam, y_cam, 0);
-            Eigen::Vector3f p_map = rot_eigen * p_cam + cam_pos;
-            
             geometry_msgs::msg::Point p;
-            p.x = p_map.x();
-            p.y = p_map.y();
+            p.x = x_cam;
+            p.y = y_cam;
             p.z = 0;
             right_marker.points.push_back(p);
         }
@@ -126,73 +113,29 @@ namespace lane_detection_visualization {
     }
 
     void publishClusterMarkers(
-        const pcl::PointCloud<pcl::PointXYZ>::Ptr& cloud, 
-        const std::vector<pcl::PointIndices>& clusters,
-        const geometry_msgs::msg::Pose& camera_pose,
-        const rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr& publisher,
-        const rclcpp::Time& current_time)
+    const pcl::PointCloud<pcl::PointXYZ>::Ptr& cloud, 
+    const std::vector<pcl::PointIndices>& clusters,
+    const geometry_msgs::msg::Pose& camera_pose,
+    const rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr& publisher,
+    const rclcpp::Time& current_time)
     {
         visualization_msgs::msg::MarkerArray cluster_markers;
 
-        // Camera position and orientation in map frame
-        Eigen::Vector3f camera_position(
-        camera_pose.position.x,
-        camera_pose.position.y,
-        camera_pose.position.z);
-
-        // Get camera orientation
-        tf2::Quaternion q(
-        camera_pose.orientation.x,
-        camera_pose.orientation.y,
-        camera_pose.orientation.z,
-        camera_pose.orientation.w);
-        tf2::Matrix3x3 m(q);
-        double roll, pitch, yaw;
-        m.getRPY(roll, pitch, yaw);
-        const float cos_yaw = cos(yaw);
-        const float sin_yaw = sin(yaw);
-
-        for (size_t i = 0; i < clusters.size(); ++i)
-        {
-            // Voting system for left/right determination
+        for (size_t i = 0; i < clusters.size(); ++i) {
+            // Voting system remains the same
             int left_votes = 0;
             int right_votes = 0;
-            float total_y_cam = 0.0f; // Accumulated y position in camera frame
-
-            // First pass: analyze all points
+            
             for (int idx : clusters[i].indices) {
                 const auto& point = cloud->points[idx];
-                Eigen::Vector3f relative_pos(point.x - camera_position[0],
-                                    point.y - camera_position[1],
-                                    point.z - camera_position[2]);
-
-                // Transform to camera frame
-                float y_cam = -relative_pos[0] * sin_yaw + relative_pos[1] * cos_yaw;
-                total_y_cam += y_cam;
-
-                // Vote based on point's position
-                if (y_cam > 0) {
-                    left_votes++;
-                    
-                } else {
-                    right_votes++;
-                }
+                if (point.y > 0) left_votes++;
+                else right_votes++;
             }
 
-            // Determine cluster side based on voting
-            bool is_left;
-            if (left_votes == 0 && right_votes == 0) {
-                is_left = true; // default if empty (shouldn't happen)
+            bool is_left = (left_votes > right_votes);
 
-            } else {
-                // Use both voting and mean y position for robustness
-                float mean_y_cam = total_y_cam / clusters[i].indices.size();
-                is_left = (left_votes > right_votes) || ((left_votes == right_votes) && (mean_y_cam > 0));
-            }
-
-            // Create marker
             visualization_msgs::msg::Marker cluster_marker;
-            cluster_marker.header.frame_id = "map";
+            cluster_marker.header.frame_id = "base_link";
             cluster_marker.header.stamp = current_time;
             cluster_marker.ns = "clusters";
             cluster_marker.id = i;
@@ -201,26 +144,24 @@ namespace lane_detection_visualization {
             cluster_marker.scale.y = 0.05;
             cluster_marker.scale.z = 0.05;
 
-            // Set color based on left/right
             if (is_left) {
-                // Left cluster - green
                 cluster_marker.color.r = 0.0;
                 cluster_marker.color.g = 1.0;
                 cluster_marker.color.b = 0.0;
             } else {
-                // Right cluster - red
                 cluster_marker.color.r = 1.0;
                 cluster_marker.color.g = 0.0;
                 cluster_marker.color.b = 0.0;
             }
             cluster_marker.color.a = 1.0;
 
-            // Add points
+            // Use raw points directly (already in base_link frame)
             for (int idx : clusters[i].indices) {
+                const auto& point = cloud->points[idx];
                 geometry_msgs::msg::Point p;
-                p.x = cloud->points[idx].x;
-                p.y = cloud->points[idx].y;
-                p.z = cloud->points[idx].z;
+                p.x = point.x;
+                p.y = point.y;
+                p.z = point.z;
                 cluster_marker.points.push_back(p);
             }
 
@@ -246,7 +187,7 @@ namespace lane_detection_visualization {
     // Helper lambda to create markers
     auto createMarker = [&](const pcl::PointIndices& indices, int id, const std::tuple<float, float, float>& color) {
     visualization_msgs::msg::Marker marker;
-    marker.header.frame_id = "map";
+    marker.header.frame_id = "base_link";
     marker.header.stamp = current_time;
     marker.ns = "clusters";
     marker.id = id;
@@ -311,7 +252,7 @@ namespace lane_detection_visualization {
         auto createArrowMarker = [&](int id, const Eigen::Vector3f &dir, const std_msgs::msg::ColorRGBA &color)
         {
             visualization_msgs::msg::Marker arrow;
-            arrow.header.frame_id = "map"; // Change if needed
+            arrow.header.frame_id = "base_link"; // Change if needed
             arrow.header.stamp = current_time;
             arrow.ns = "camera_axes";
             arrow.id = id;
