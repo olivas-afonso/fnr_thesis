@@ -401,7 +401,7 @@ void KalmanRelLocalization::pointCloudCallback(const sensor_msgs::msg::PointClou
         // Create middle lane marker
         visualization_msgs::msg::MarkerArray middle_markers;
         visualization_msgs::msg::Marker middle_marker;
-        middle_marker.header.frame_id = "map";
+        middle_marker.header.frame_id = "z";
         middle_marker.header.stamp = this->now();
         middle_marker.ns = "middle_lane";
         middle_marker.id = 0;

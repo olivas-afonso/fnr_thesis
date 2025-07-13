@@ -48,23 +48,23 @@ GlobalLocalization::GlobalLocalization(const rclcpp::NodeOptions & options)
         "particle_visualization", rclcpp::QoS(10).reliable());
     */
 
-    accumulated_white_cloud_.reset(new pcl::PointCloud<pcl::PointXYZ>());
-    persistent_white_publisher_ = this->create_publisher<sensor_msgs::msg::PointCloud2>("/persistent_white_cloud", rclcpp::SensorDataQoS().reliable().transient_local());
+    //accumulated_white_cloud_.reset(new pcl::PointCloud<pcl::PointXYZ>());
+    //persistent_white_publisher_ = this->create_publisher<sensor_msgs::msg::PointCloud2>("/persistent_white_cloud", rclcpp::SensorDataQoS().reliable().transient_local());
 
     
     white_publisher_ = this->create_publisher<sensor_msgs::msg::PointCloud2>("/white_only", 10);
-    marker_pub_ = this->create_publisher<visualization_msgs::msg::MarkerArray>("camera_axes", 10);
+    //marker_pub_ = this->create_publisher<visualization_msgs::msg::MarkerArray>("camera_axes", 10);
 
-    curve_publisher_right_ = this->create_publisher<visualization_msgs::msg::MarkerArray>("right_spline_fit_original", 10);
-    curve_publisher_left_ = this->create_publisher<visualization_msgs::msg::MarkerArray>("left_spline_fit_original", 10);
-    kalman_publisher_ = this->create_publisher<visualization_msgs::msg::MarkerArray>("kalman_state", 10);
-    middle_lane_ = this->create_publisher<visualization_msgs::msg::MarkerArray>("middle_lane", 10);
-    cluster_marker_pub_ = this->create_publisher<visualization_msgs::msg::MarkerArray>("clusters", 10);
-    test_cluster_marker_pub_ = this->create_publisher<visualization_msgs::msg::MarkerArray>("test_clusters", 10);
+    //curve_publisher_right_ = this->create_publisher<visualization_msgs::msg::MarkerArray>("right_spline_fit_original", 10);
+    //curve_publisher_left_ = this->create_publisher<visualization_msgs::msg::MarkerArray>("left_spline_fit_original", 10);
+    //kalman_publisher_ = this->create_publisher<visualization_msgs::msg::MarkerArray>("kalman_state", 10);
+    //middle_lane_ = this->create_publisher<visualization_msgs::msg::MarkerArray>("middle_lane", 10);
+    //cluster_marker_pub_ = this->create_publisher<visualization_msgs::msg::MarkerArray>("clusters", 10);
+    //test_cluster_marker_pub_ = this->create_publisher<visualization_msgs::msg::MarkerArray>("test_clusters", 10);
 
-    distance_orientation_pub_ = this->create_publisher<std_msgs::msg::Float32MultiArray>("distance_orientation", 10);
-    distance_marker_pub_ = this->create_publisher<visualization_msgs::msg::Marker>("distance_marker", 10);
-    orientation_marker_pub_ = this->create_publisher<visualization_msgs::msg::Marker>("orientation_marker", 10);
+    //distance_orientation_pub_ = this->create_publisher<std_msgs::msg::Float32MultiArray>("distance_orientation", 10);
+    //distance_marker_pub_ = this->create_publisher<visualization_msgs::msg::Marker>("distance_marker", 10);
+    //orientation_marker_pub_ = this->create_publisher<visualization_msgs::msg::Marker>("orientation_marker", 10);
 
     scan_publisher_ = this->create_publisher<sensor_msgs::msg::LaserScan>(
         "/cluster_scan", 
@@ -74,7 +74,7 @@ GlobalLocalization::GlobalLocalization(const rclcpp::NodeOptions & options)
     tf_buffer_ = std::make_shared<tf2_ros::Buffer>(this->get_clock());
     tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_, this);
 
-    debug_pub_ = create_publisher<visualization_msgs::msg::MarkerArray>("scan_debug", 10);
+    //debug_pub_ = create_publisher<visualization_msgs::msg::MarkerArray>("scan_debug", 10);
 
     
 
