@@ -44,6 +44,7 @@ KalmanRelLocalization::KalmanRelLocalization()
     distance_orientation_pub_ = this->create_publisher<std_msgs::msg::Float32MultiArray>("distance_orientation", 10);
     distance_marker_pub_ = this->create_publisher<visualization_msgs::msg::Marker>("distance_marker", 10);
     orientation_marker_pub_ = this->create_publisher<visualization_msgs::msg::Marker>("orientation_marker", 10);
+    middle_lane_path_pub_ = this->create_publisher<nav_msgs::msg::Path>("middle_lane_path", 10);
 
     tf_buffer_ = std::make_shared<tf2_ros::Buffer>(this->get_clock());
     tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_, this);
@@ -69,10 +70,10 @@ KalmanRelLocalization::KalmanRelLocalization()
 
 
     // Process noise
-    Q = Eigen::MatrixXf::Identity(6,6) * 0.01;
+    Q = Eigen::MatrixXf::Identity(6,6) * 0.001;
             
     //Measurement noise
-    R = Eigen::MatrixXf::Identity(6,6) * 0.01;  // For full observation case
+    R = Eigen::MatrixXf::Identity(6,6) * 0.1;  // For full observation case
     I = Eigen::MatrixXf::Identity(6,6);
 
     // State transition model with coupling between lanes
@@ -208,7 +209,7 @@ void KalmanRelLocalization::pointCloudCallback(const sensor_msgs::msg::PointClou
         return;
     }
 
-     RCLCPP_WARN(this->get_logger(), "Input cloud frame: %s", white_cloud->header.frame_id.c_str());
+     //RCLCPP_WARN(this->get_logger(), "Input cloud frame: %s", white_cloud->header.frame_id.c_str());
     
 
     publishCameraAxes(current_pose_, marker_pub_, current_time);
@@ -310,9 +311,9 @@ void KalmanRelLocalization::pointCloudCallback(const sensor_msgs::msg::PointClou
             // Special case: if only one cluster found, still classify it properly
             if (selected_clusters.size() == 1) {
                 if (left_detected && !right_detected) {
-                    RCLCPP_INFO(this->get_logger(), "Single cluster detected on left side");
+                    //RCLCPP_INFO(this->get_logger(), "Single cluster detected on left side");
                 } else if (!left_detected && right_detected) {
-                    RCLCPP_INFO(this->get_logger(), "Single cluster detected on right side");
+                    //RCLCPP_INFO(this->get_logger(), "Single cluster detected on right side");
                 }
             }
         }
@@ -406,6 +407,20 @@ void KalmanRelLocalization::pointCloudCallback(const sensor_msgs::msg::PointClou
             // c should already be properly positioned
         }
 
+        max_a_ = 999;
+        max_b_=999;
+        min_c_=-999;
+        max_c_=999;
+
+        // Add limits to the coefficients (clamp them)
+        middle_coeffs_cam[0] = std::clamp(middle_coeffs_cam[0], -max_a_, max_a_);  // a (curvature)
+        middle_coeffs_cam[1] = std::clamp(middle_coeffs_cam[1], -max_b_, max_b_);  // b (orientation)
+        middle_coeffs_cam[2] = std::clamp(middle_coeffs_cam[2], min_c_, max_c_);   // c (lateral offset)
+
+
+        RCLCPP_INFO(this->get_logger(), "Middle lane coefficients - a: %.3f, b: %.3f, c: %.3f", 
+            middle_coeffs_cam[0], middle_coeffs_cam[1], middle_coeffs_cam[2]);
+
         // Get camera position and orientation for visualization
         tf2::Quaternion q(
             current_pose_.pose.orientation.x,
@@ -456,6 +471,31 @@ void KalmanRelLocalization::pointCloudCallback(const sensor_msgs::msg::PointClou
 
         middle_markers.markers.push_back(middle_marker);
         middle_lane_->publish(middle_markers);
+
+        // TEST MIDDLE PATH
+        nav_msgs::msg::Path middle_path;
+        middle_path.header.frame_id = "base_link";
+        middle_path.header.stamp = this->now();
+
+        // Generate points for middle curve
+
+
+        for (float x_cam = x_min_cam; x_cam <= x_max_cam; x_cam += 0.1f) {
+            float y_cam = middle_coeffs_cam[0]*x_cam*x_cam + middle_coeffs_cam[1]*x_cam + middle_coeffs_cam[2];
+            
+            geometry_msgs::msg::PoseStamped pose;
+            pose.header.frame_id = "base_link";
+            pose.header.stamp = middle_path.header.stamp;
+            pose.pose.position.x = x_cam;
+            pose.pose.position.y = y_cam;
+            pose.pose.position.z = 0;
+            pose.pose.orientation.w = 1.0;  // Default orientation
+            
+            middle_path.poses.push_back(pose);
+        }
+
+        middle_lane_path_pub_->publish(middle_path);
+        // TEST MIDDLE PATH
 
         // Calculate distance and orientation
         float distance = 0.0f;

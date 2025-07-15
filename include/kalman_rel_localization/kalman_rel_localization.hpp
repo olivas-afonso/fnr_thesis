@@ -17,6 +17,7 @@
 #include <tf2_ros/buffer.h>
 #include <tf2_ros/transform_listener.h>
 #include <geometry_msgs/msg/pose_stamped.hpp>
+#include "nav_msgs/msg/path.hpp"
 
 class KalmanRelLocalization : public rclcpp::Node
 {
@@ -37,6 +38,11 @@ private:
     rclcpp::Time last_update_time_;
     rclcpp::Time last_speed_time_;
     rclcpp::Time last_servo_time_;
+
+    float max_a_;
+    float max_b_;
+    float min_c_;
+    float max_c_;
 
     std::deque<std::pair<rclcpp::Time, float>> speed_history_;
     std::deque<std::pair<rclcpp::Time, float>> servo_history_;
@@ -81,6 +87,7 @@ private:
     rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr distance_marker_pub_;
     rclcpp::Publisher<visualization_msgs::msg::Marker>::SharedPtr orientation_marker_pub_;
     rclcpp::Publisher<std_msgs::msg::Float32MultiArray>::SharedPtr distance_orientation_pub_;
+    rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr middle_lane_path_pub_;    
 
     // Subscribers
     rclcpp::Subscription<sensor_msgs::msg::PointCloud2>::SharedPtr subscription_;

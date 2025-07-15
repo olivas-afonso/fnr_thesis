@@ -5,19 +5,23 @@
 
 namespace lane_detection_utils {
 
-    Eigen::Vector3f fitQuadraticCurve(pcl::PointCloud<pcl::PointXYZ>::Ptr cluster, 
+    Eigen::Vector3f fitQuadraticCurve(
+    pcl::PointCloud<pcl::PointXYZ>::Ptr cluster, 
     rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr pub,
     const geometry_msgs::msg::Pose& camera_pose,
     const rclcpp::Time& current_time)
     {
-            // Points are already in base_link frame - use directly
+        // Points are already in base_link frame - use directly
         std::vector<float> x_vals, y_vals;
         for (const auto &point : cluster->points) {
-            x_vals.push_back(point.x);  // Use raw coordinates
+            x_vals.push_back(point.x);
             y_vals.push_back(point.y);
         }
 
-        // Fit quadratic in camera frame (y = ax² + bx + c)
+        // Regularization parameter (tune this value as needed)
+        const float lambda = 0.7f;  // Higher = stronger preference for straight lines
+
+        // Build matrices for least-squares with regularization
         Eigen::MatrixXd A(x_vals.size(), 3);
         Eigen::VectorXd Z(y_vals.size());
 
@@ -28,11 +32,18 @@ namespace lane_detection_utils {
             Z(i) = y_vals[i];
         }
 
-        Eigen::Vector3d coeffs_cam = A.colPivHouseholderQr().solve(Z);
+        // Regularization matrix (penalizes large 'a' coefficients)
+        Eigen::Matrix3d L = Eigen::Matrix3d::Zero();
+        L(0, 0) = lambda;  // Only penalize the quadratic term (curvature)
+
+        // Solve (AᵀA + L)θ = AᵀZ
+        Eigen::Matrix3d ATA = A.transpose() * A;
+        Eigen::Vector3d ATZ = A.transpose() * Z;
+        Eigen::Vector3d coeffs_cam = (ATA + L).ldlt().solve(ATZ);
 
         // Visualize curve in base_link frame
         visualization_msgs::msg::Marker curve_marker;
-        curve_marker.header.frame_id = "base_link";  // Changed from "map"
+        curve_marker.header.frame_id = "base_link";
         curve_marker.header.stamp = current_time;
         curve_marker.ns = "curve_fit";
         curve_marker.id = 1;
@@ -43,7 +54,7 @@ namespace lane_detection_utils {
         curve_marker.color.b = 1.0;
         curve_marker.color.a = 1.0;
 
-        // Generate curve points directly in camera frame
+        // Generate curve points
         float x_min = *std::min_element(x_vals.begin(), x_vals.end());
         float x_max = *std::max_element(x_vals.begin(), x_vals.end());
 
@@ -51,7 +62,7 @@ namespace lane_detection_utils {
             float y = coeffs_cam(0)*x*x + coeffs_cam(1)*x + coeffs_cam(2);
             
             geometry_msgs::msg::Point p;
-            p.x = x;  // Directly use camera-relative coordinates
+            p.x = x;
             p.y = y;
             p.z = 0.0;
             curve_marker.points.push_back(p);
@@ -151,8 +162,8 @@ namespace lane_detection_utils {
     const geometry_msgs::msg::Pose &current_pose_)
     {
         // Input cloud should already be in base_link frame
-        RCLCPP_INFO(rclcpp::get_logger("clusterWhitePoints"), 
-            "Input cloud in frame: %s", cloud->header.frame_id.c_str());
+        //RCLCPP_INFO(rclcpp::get_logger("clusterWhitePoints"), 
+           // "Input cloud in frame: %s", cloud->header.frame_id.c_str());
         
         // Perform clustering directly in base_link frame
         pcl::search::KdTree<pcl::PointXYZ>::Ptr tree(new pcl::search::KdTree<pcl::PointXYZ>());
@@ -168,8 +179,8 @@ namespace lane_detection_utils {
         ec.extract(clusters);
 
         // Debug: Check found clusters
-        RCLCPP_INFO(rclcpp::get_logger("clusterWhitePoints"), 
-            "Found %zu clusters before filtering", clusters.size());
+        //RCLCPP_INFO(rclcpp::get_logger("clusterWhitePoints"), 
+            //"Found %zu clusters before filtering", clusters.size());
 
         // Filter clusters based on distance (exact same logic as old version, but simplified for base_link frame)
         std::vector<pcl::PointIndices> filtered_clusters;
@@ -207,8 +218,8 @@ namespace lane_detection_utils {
             filtered_clusters.push_back(cluster_distance_pairs[i].first);
         }
 
-        RCLCPP_INFO(rclcpp::get_logger("clusterWhitePoints"), 
-            "Returning %zu filtered clusters", filtered_clusters.size());
+        //RCLCPP_INFO(rclcpp::get_logger("clusterWhitePoints"), 
+            //"Returning %zu filtered clusters", filtered_clusters.size());
 
         return filtered_clusters;
     }
