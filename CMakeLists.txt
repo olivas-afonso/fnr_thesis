@@ -12,13 +12,13 @@ find_package(sensor_msgs REQUIRED)
 find_package(pcl_ros REQUIRED)
 find_package(pcl_conversions REQUIRED)
 find_package(std_msgs REQUIRED)
-find_package(OpenCV REQUIRED)
+find_package(OpenCV 4.5 REQUIRED COMPONENTS core imgproc dnn)
 find_package(visualization_msgs REQUIRED)
 find_package(tf2 REQUIRED)
 find_package(tf2_ros REQUIRED)
 find_package(tf2_sensor_msgs REQUIRED)
 find_package(GSL REQUIRED)
-find_package(OpenCV REQUIRED)
+
 find_package(tf2_geometry_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(tf2_eigen REQUIRED) 
@@ -27,7 +27,14 @@ find_package(point_cloud_interfaces REQUIRED)
 find_package(PCL REQUIRED COMPONENTS common)
 find_package(yaml-cpp REQUIRED)
 find_package(rcpputils REQUIRED)
-find_package(nav_msgs REQUIRED)  # Add this line
+find_package(cv_bridge REQUIRED)
+
+find_package(nav_msgs REQUIRED)  
+find_package(rclcpp REQUIRED)
+find_package(zed_msgs REQUIRED)
+find_package(visualization_msgs REQUIRED)
+find_package(geometry_msgs REQUIRED)
+
 
 
 find_package(nav2_msgs REQUIRED)
@@ -247,6 +254,39 @@ ament_target_dependencies(map_creator_pc
   rcpputils
 )
 
+add_executable(zed_image_saver src/zed_image_saver.cpp)
+ament_target_dependencies(zed_image_saver
+  rclcpp
+  sensor_msgs
+  cv_bridge
+)
+
+add_executable(yolo_visualize src/yolo_visualize.cpp)
+ament_target_dependencies(yolo_visualize
+  rclcpp
+  zed_msgs
+  visualization_msgs
+  geometry_msgs
+  cv_bridge
+)
+
+add_executable(mobile_net src/mobile_net.cpp)
+ament_target_dependencies(mobile_net
+  rclcpp
+  cv_bridge
+  sensor_msgs
+  zed_msgs
+)
+# Add OpenCV linking specifically for mobile_net
+target_link_libraries(mobile_net
+  ${OpenCV_LIBS}
+)
+
+# Add include directories for OpenCV
+target_include_directories(mobile_net PRIVATE
+  ${OpenCV_INCLUDE_DIRS}
+)
+
 #add_executable(map_creator_ls src/map_creator_ls.cpp)
 #ament_target_dependencies(map_creator_ls
 #  rclcpp
@@ -281,7 +321,11 @@ install(TARGETS
   pose_waiter 
   map_creator_pc
   #map_creator_ls
+  zed_image_saver
+  yolo_visualize
+  mobile_net
   DESTINATION lib/${PROJECT_NAME}
+  
 )
 
 install(

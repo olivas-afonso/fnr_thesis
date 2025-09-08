@@ -70,10 +70,10 @@ KalmanRelLocalization::KalmanRelLocalization()
 
 
     // Process noise
-    Q = Eigen::MatrixXf::Identity(6,6) * 0.001;
+    Q = Eigen::MatrixXf::Identity(6,6) * 0.01;
             
     //Measurement noise
-    R = Eigen::MatrixXf::Identity(6,6) * 0.1;  // For full observation case
+    R = Eigen::MatrixXf::Identity(6,6) * 0.01;  // For full observation case
     I = Eigen::MatrixXf::Identity(6,6);
 
     // State transition model with coupling between lanes
@@ -111,6 +111,8 @@ void KalmanRelLocalization::servoCallback(const std_msgs::msg::Float32::SharedPt
 
 void KalmanRelLocalization::pointCloudCallback(const sensor_msgs::msg::PointCloud2::SharedPtr msg)
 {
+
+
     rclcpp::Time current_time = msg->header.stamp;
     float dt;
 
@@ -221,7 +223,7 @@ void KalmanRelLocalization::pointCloudCallback(const sensor_msgs::msg::PointClou
 
     std::vector<pcl::PointIndices> selected_clusters = clusterWhitePoints(white_cloud, current_pose_.pose);
     for (size_t i = 0; i < selected_clusters.size(); ++i) {
-        RCLCPP_INFO(this->get_logger(), "Cluster %zu has %zu points", i, selected_clusters[i].indices.size());
+        //RCLCPP_INFO(this->get_logger(), "Cluster %zu has %zu points", i, selected_clusters[i].indices.size());
     }
     publishClusterMarkers(white_cloud, selected_clusters, current_pose_.pose, cluster_marker_pub_, current_time);
 
@@ -306,6 +308,33 @@ void KalmanRelLocalization::pointCloudCallback(const sensor_msgs::msg::PointClou
             if (min_right_score < std::numeric_limits<float>::infinity()) {
                 rightmost_cluster = right_candidate;
                 right_detected = true;
+            }
+
+            if (left_detected && right_detected) {
+                // Calculate centroids
+                Eigen::Vector3f left_centroid(0,0,0), right_centroid(0,0,0);
+                
+                for (int idx : left_candidate.indices) {
+                    const auto& p = white_cloud->points[idx];
+                    left_centroid += Eigen::Vector3f(p.x, p.y, p.z);
+                }
+                left_centroid /= left_candidate.indices.size();
+                
+                for (int idx : right_candidate.indices) {
+                    const auto& p = white_cloud->points[idx];
+                    right_centroid += Eigen::Vector3f(p.x, p.y, p.z);
+                }
+                right_centroid /= right_candidate.indices.size();
+                
+                // If centroids are too close, it's probably one cluster
+                if ((left_centroid - right_centroid).norm() < 0.3f) {  // 0.3m threshold
+                    // Decide based on which side has stronger signal
+                    if (abs(max_left_score) > abs(min_right_score)) {
+                        right_detected = false;  // Treat as left cluster only
+                    } else {
+                        left_detected = false;   // Treat as right cluster only
+                    }
+                }
             }
         
             // Special case: if only one cluster found, still classify it properly
@@ -407,19 +436,11 @@ void KalmanRelLocalization::pointCloudCallback(const sensor_msgs::msg::PointClou
             // c should already be properly positioned
         }
 
-        max_a_ = 999;
-        max_b_=999;
-        min_c_=-999;
-        max_c_=999;
-
-        // Add limits to the coefficients (clamp them)
-        middle_coeffs_cam[0] = std::clamp(middle_coeffs_cam[0], -max_a_, max_a_);  // a (curvature)
-        middle_coeffs_cam[1] = std::clamp(middle_coeffs_cam[1], -max_b_, max_b_);  // b (orientation)
-        middle_coeffs_cam[2] = std::clamp(middle_coeffs_cam[2], min_c_, max_c_);   // c (lateral offset)
 
 
-        RCLCPP_INFO(this->get_logger(), "Middle lane coefficients - a: %.3f, b: %.3f, c: %.3f", 
-            middle_coeffs_cam[0], middle_coeffs_cam[1], middle_coeffs_cam[2]);
+
+        //RCLCPP_INFO(this->get_logger(), "Middle lane coefficients - a: %.3f, b: %.3f, c: %.3f", 
+        //    middle_coeffs_cam[0], middle_coeffs_cam[1], middle_coeffs_cam[2]);
 
         // Get camera position and orientation for visualization
         tf2::Quaternion q(
@@ -439,59 +460,42 @@ void KalmanRelLocalization::pointCloudCallback(const sensor_msgs::msg::PointClou
             current_pose_.pose.position.y,
             current_pose_.pose.position.z);
 
-        // Create middle lane marker
-        visualization_msgs::msg::MarkerArray middle_markers;
-        visualization_msgs::msg::Marker middle_marker;
-        middle_marker.header.frame_id = "base_link";
-        middle_marker.header.stamp = this->now();
-        middle_marker.ns = "middle_lane";
-        middle_marker.id = 0;
-        middle_marker.type = visualization_msgs::msg::Marker::LINE_STRIP;
-        middle_marker.action = visualization_msgs::msg::Marker::ADD;
-        middle_marker.scale.x = 0.05;
-        middle_marker.color.r = 1.0;
-        middle_marker.color.g = 1.0;
-        middle_marker.color.b = 0.0;
-        middle_marker.color.a = has_observation ? 1.0 : 0.5; // Faded when predicted only
-        middle_marker.pose.orientation.w = 1.0;
 
-        // Generate points for middle curve
         float x_min_cam = 0.5f;
-        float x_max_cam = 3.0f;
-        
-        for (float x_cam = x_min_cam; x_cam <= x_max_cam; x_cam += 0.1f) {
-            float y_cam = middle_coeffs_cam[0]*x_cam*x_cam + middle_coeffs_cam[1]*x_cam + middle_coeffs_cam[2];
-            
-            geometry_msgs::msg::Point p;
-            p.x = x_cam;  // Forward in camera frame
-            p.y = y_cam;  // Lateral position
-            p.z = 0;      // Ground plane
-            middle_marker.points.push_back(p);
-        }
-
-        middle_markers.markers.push_back(middle_marker);
-        middle_lane_->publish(middle_markers);
+        float x_max_cam = 2.0f;
 
         // TEST MIDDLE PATH
+        // Replace the middle path generation code with this:
         nav_msgs::msg::Path middle_path;
-        middle_path.header.frame_id = "base_link";
+        middle_path.header.frame_id = "odom";  // Changed from base_link to odom
         middle_path.header.stamp = this->now();
 
-        // Generate points for middle curve
+        try {
+            geometry_msgs::msg::TransformStamped transform = 
+                tf_buffer_->lookupTransform("odom", "base_link", msg->header.stamp);
 
-
-        for (float x_cam = x_min_cam; x_cam <= x_max_cam; x_cam += 0.1f) {
-            float y_cam = middle_coeffs_cam[0]*x_cam*x_cam + middle_coeffs_cam[1]*x_cam + middle_coeffs_cam[2];
             
-            geometry_msgs::msg::PoseStamped pose;
-            pose.header.frame_id = "base_link";
-            pose.header.stamp = middle_path.header.stamp;
-            pose.pose.position.x = x_cam;
-            pose.pose.position.y = y_cam;
-            pose.pose.position.z = 0;
-            pose.pose.orientation.w = 1.0;  // Default orientation
-            
-            middle_path.poses.push_back(pose);
+            for (float x_cam = x_min_cam; x_cam <= x_max_cam; x_cam += 0.1f) {
+                float y_cam = middle_coeffs_cam[0]*x_cam*x_cam + middle_coeffs_cam[1]*x_cam + middle_coeffs_cam[2];
+                
+                geometry_msgs::msg::PoseStamped pose;
+                pose.header.frame_id = "base_link";
+                pose.header.stamp = this->now();  // Use current time
+                pose.pose.position.x = x_cam;
+                pose.pose.position.y = y_cam;
+                pose.pose.position.z = 0;
+                pose.pose.orientation.w = 1.0;
+                
+                // Transform the point to odom frame
+                geometry_msgs::msg::PoseStamped transformed_pose;
+                tf2::doTransform(pose, transformed_pose, transform);
+                
+                transformed_pose.header.frame_id = "odom";
+                middle_path.poses.push_back(transformed_pose);
+            }
+        } catch (const tf2::TransformException &ex) {
+            RCLCPP_ERROR(this->get_logger(), "TF transform failed: %s", ex.what());
+            return;
         }
 
         middle_lane_path_pub_->publish(middle_path);

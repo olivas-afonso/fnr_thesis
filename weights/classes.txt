@@ -1,0 +1,12 @@
+bus
+crosswalk
+speed
+warning
+left
+bump
+animal
+lights
+lanes
+hospital
+roundabout
+parking

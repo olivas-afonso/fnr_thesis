@@ -72,16 +72,17 @@ namespace lane_detection_visualization {
         left_marker.action = visualization_msgs::msg::Marker::ADD;
         left_marker.scale.x = 0.05; // Line width
         left_marker.color.a = 1.0;
-        left_marker.color.g = left_detected ? 1.0 : 0.5;  // Green if detected
+        left_marker.color.r = 0.2;
+        left_marker.color.g = left_detected ? 0.6 : 0.3;  // Green if detected
         left_marker.color.b = left_detected ? 0.0 : 1.0;  // Blue if estimated
         left_marker.pose.orientation.w = 1.0;
     
         // 5. Create right lane marker (red for detected, pink for estimated)
         visualization_msgs::msg::Marker right_marker = left_marker;
         right_marker.id = 1;
-        right_marker.color.r = 1.0;
-        right_marker.color.g = right_detected ? 0.0 : 0.5;
-        right_marker.color.b = right_detected ? 0.0 : 0.5;
+        right_marker.color.r = right_detected ? 0.6 : 0.5;  // Lower than 1.0 makes it darker
+        right_marker.color.g = right_detected ? 0.0 : 0.3;  // Slight green gives more muted tone
+        right_marker.color.b = right_detected ? 0.0 : 1.0;  // Blue if not detected (same as left)
     
         // 6. Generate points for left lane
         const float step_size = 0.2f;
