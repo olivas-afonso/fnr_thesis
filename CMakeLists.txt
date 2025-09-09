@@ -45,6 +45,8 @@ find_package(std_srvs REQUIRED)   # Add this
 find_package(PCL REQUIRED COMPONENTS common io surface)
 find_package(PCL 1.12 REQUIRED COMPONENTS common segmentation filters)
 
+find_package(PCL REQUIRED COMPONENTS common segmentation kdtree filters)
+
 
 
 include_directories(
@@ -277,6 +279,27 @@ ament_target_dependencies(mobile_net
   sensor_msgs
   zed_msgs
 )
+
+add_executable(object_detector
+  src/object_detector.cpp
+)
+
+# Link dependencies
+ament_target_dependencies(object_detector
+  rclcpp
+  sensor_msgs
+  visualization_msgs
+  geometry_msgs
+  std_msgs
+  pcl_conversions
+  tf2
+)
+
+# Add PCL linking for object_detector
+target_link_libraries(object_detector
+  ${PCL_LIBRARIES}
+)
+
 # Add OpenCV linking specifically for mobile_net
 target_link_libraries(mobile_net
   ${OpenCV_LIBS}
@@ -324,6 +347,7 @@ install(TARGETS
   zed_image_saver
   yolo_visualize
   mobile_net
+  object_detector
   DESTINATION lib/${PROJECT_NAME}
   
 )
