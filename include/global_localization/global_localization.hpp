@@ -35,9 +35,17 @@ class GlobalLocalization : public rclcpp::Node
 {
 public:
     GlobalLocalization(const rclcpp::NodeOptions & options);
+    void initializePathFile();
     
 private:
     // Member variables
+
+    bool save_path_;
+    std::string path_filename_;
+    double save_interval_;
+    rclcpp::Time last_save_time_;
+    geometry_msgs::msg::PoseStamped last_saved_pose_;
+
     bool map_received_ = false;
     nav_msgs::msg::OccupancyGrid::SharedPtr current_map_;
 
@@ -74,6 +82,8 @@ private:
     void speedCallback(const std_msgs::msg::Float32::SharedPtr msg);
     void servoCallback(const std_msgs::msg::Float32::SharedPtr msg);
     void pointCloudCallback(const sensor_msgs::msg::PointCloud2::SharedPtr msg);
+    void saveCarPath(const geometry_msgs::msg::PoseStamped& pose);
+    
 
     sensor_msgs::msg::LaserScan pointCloudToLaserScan(
         const pcl::PointCloud<pcl::PointXYZ>::Ptr& cloud,

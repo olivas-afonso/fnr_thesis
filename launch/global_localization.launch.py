@@ -27,6 +27,24 @@ def generate_launch_description():
         default_value='true',
         description='Use simulation clock if true'
     )
+
+    save_path_arg = DeclareLaunchArgument(
+        'save_path',
+        default_value='false',
+        description='Enable saving car path to file'
+    )
+
+    path_filename_arg = DeclareLaunchArgument(
+        'path_filename',
+        default_value='car_path.csv',
+        description='Filename for saving car path'
+    )
+
+    save_interval_arg = DeclareLaunchArgument(
+        'save_interval',
+        default_value='0.1',
+        description='Time interval between path saves (seconds)'
+    )
     
 
     point_cloud_processor_node = Node(
@@ -133,7 +151,10 @@ def generate_launch_description():
             'fit_side': True,
             'time_jump_threshold': 5.0,
             'min_scan_range': 0.1,
-            'max_scan_range': 10.0
+            'max_scan_range': 10.0,
+            'save_path': LaunchConfiguration('save_path'),  
+            'path_filename': LaunchConfiguration('path_filename'),  
+            'save_interval': LaunchConfiguration('save_interval')  
         }]
     )
 
@@ -169,6 +190,9 @@ def generate_launch_description():
 
     return LaunchDescription([
         declare_use_sim_time,
+        save_path_arg,
+        path_filename_arg,
+        save_interval_arg,
         point_cloud_processor_node,
         #*tf_publishers,
         map_server,

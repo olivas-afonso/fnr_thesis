@@ -47,6 +47,8 @@ find_package(PCL 1.12 REQUIRED COMPONENTS common segmentation filters)
 
 find_package(PCL REQUIRED COMPONENTS common segmentation kdtree filters)
 
+find_package(image_transport REQUIRED)
+
 
 
 include_directories(
@@ -270,6 +272,20 @@ ament_target_dependencies(yolo_visualize
   visualization_msgs
   geometry_msgs
   cv_bridge
+  image_transport
+  sensor_msgs
+)
+
+target_link_libraries(yolo_visualize
+  ${OpenCV_LIBS}
+  opencv_dnn  # Add explicit dnn library
+  opencv_core
+  opencv_imgproc
+  opencv_imgcodecs
+)
+
+target_include_directories(yolo_visualize PRIVATE
+  ${OpenCV_INCLUDE_DIRS}
 )
 
 add_executable(mobile_net src/mobile_net.cpp)
@@ -294,6 +310,8 @@ ament_target_dependencies(object_detector
   pcl_conversions
   tf2
 )
+add_executable(amcl_path_recorder src/amcl_path_recorder.cpp)
+ament_target_dependencies(amcl_path_recorder rclcpp geometry_msgs)
 
 # Add PCL linking for object_detector
 target_link_libraries(object_detector
@@ -348,6 +366,7 @@ install(TARGETS
   yolo_visualize
   mobile_net
   object_detector
+  amcl_path_recorder
   DESTINATION lib/${PROJECT_NAME}
   
 )

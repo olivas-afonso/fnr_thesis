@@ -53,18 +53,7 @@ GlobalLocalization::GlobalLocalization(const rclcpp::NodeOptions & options)
 
     
     white_publisher_ = this->create_publisher<sensor_msgs::msg::PointCloud2>("/white_only", 10);
-    //marker_pub_ = this->create_publisher<visualization_msgs::msg::MarkerArray>("camera_axes", 10);
 
-    //curve_publisher_right_ = this->create_publisher<visualization_msgs::msg::MarkerArray>("right_spline_fit_original", 10);
-    //curve_publisher_left_ = this->create_publisher<visualization_msgs::msg::MarkerArray>("left_spline_fit_original", 10);
-    //kalman_publisher_ = this->create_publisher<visualization_msgs::msg::MarkerArray>("kalman_state", 10);
-    //middle_lane_ = this->create_publisher<visualization_msgs::msg::MarkerArray>("middle_lane", 10);
-    //cluster_marker_pub_ = this->create_publisher<visualization_msgs::msg::MarkerArray>("clusters", 10);
-    //test_cluster_marker_pub_ = this->create_publisher<visualization_msgs::msg::MarkerArray>("test_clusters", 10);
-
-    //distance_orientation_pub_ = this->create_publisher<std_msgs::msg::Float32MultiArray>("distance_orientation", 10);
-    //distance_marker_pub_ = this->create_publisher<visualization_msgs::msg::Marker>("distance_marker", 10);
-    //orientation_marker_pub_ = this->create_publisher<visualization_msgs::msg::Marker>("orientation_marker", 10);
 
     scan_publisher_ = this->create_publisher<sensor_msgs::msg::LaserScan>(
         "/cluster_scan", 
@@ -74,23 +63,26 @@ GlobalLocalization::GlobalLocalization(const rclcpp::NodeOptions & options)
     tf_buffer_ = std::make_shared<tf2_ros::Buffer>(this->get_clock());
     tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_, this);
 
-    //debug_pub_ = create_publisher<visualization_msgs::msg::MarkerArray>("scan_debug", 10);
-
     
 
     this->declare_parameter("fit_side", true);
     this->get_parameter("fit_side", fit_side_);
 
-    // Add this at the beginning of the constructor
-
     this->declare_parameter("time_jump_threshold", 5.0); // Increased from 1.0 to 5.0
     this->get_parameter("time_jump_threshold", time_jump_threshold_);
 
-    // Add parameters for laser scan conversion
     this->declare_parameter("min_scan_range", 0.1);
     this->declare_parameter("max_scan_range", 10.0);
 
+    this->declare_parameter("save_path", false);
+    this->declare_parameter("path_filename", "car_path.csv");
+    this->declare_parameter("save_interval", 0.1);  // seconds between saves
     
+    this->get_parameter("save_path", save_path_);
+    this->get_parameter("path_filename", path_filename_);
+    this->get_parameter("save_interval", save_interval_);
+
+    last_save_time_ = this->now();
         // In constructor:
     last_speed_time_ = this->now();
     last_servo_time_ = this->now();
@@ -99,35 +91,72 @@ GlobalLocalization::GlobalLocalization(const rclcpp::NodeOptions & options)
     last_speed_value_ = 0.0f;
 }
 
-/*
-void GlobalLocalization::particleCallback(const nav2_msgs::msg::ParticleCloud::SharedPtr msg)
+void GlobalLocalization::saveCarPath(const geometry_msgs::msg::PoseStamped& pose)
 {
-    visualization_msgs::msg::MarkerArray markers;
-    visualization_msgs::msg::Marker marker;
-    
-    marker.header = msg->header;
-    marker.ns = "particles";
-    marker.type = visualization_msgs::msg::Marker::SPHERE;
-    marker.action = visualization_msgs::msg::Marker::ADD;
-    marker.scale.x = 0.1;
-    marker.scale.y = 0.1;
-    marker.scale.z = 0.1;
-    marker.color.a = 0.5;
-    marker.color.r = 0.0;
-    marker.color.g = 1.0;
-    marker.color.b = 0.0;
-    
-    for (size_t i = 0; i < msg->particles.size(); ++i) {
-        marker.id = i;
-        marker.pose = msg->particles[i].pose;
-        markers.markers.push_back(marker);
+    if (!save_path_) {
+        return;
     }
     
-    // Publish to RViz or similar
-    particle_viz_pub_->publish(markers);
-    RCLCPP_DEBUG(this->get_logger(), "Visualized %zu particles", msg->particles.size());
+    // Check if pose has changed significantly
+    bool pose_changed = false;
+    if (last_saved_pose_.header.stamp.sec == 0) { // First pose
+        pose_changed = true;
+    } else {
+        double dx = pose.pose.position.x - last_saved_pose_.pose.position.x;
+        double dy = pose.pose.position.y - last_saved_pose_.pose.position.y;
+        double dz = pose.pose.position.z - last_saved_pose_.pose.position.z;
+        double distance = std::sqrt(dx*dx + dy*dy + dz*dz);
+        
+        if (distance > 0.01) { // Save if moved more than 1cm
+            pose_changed = true;
+        }
+    }
+    
+    if (pose_changed) {
+        std::ofstream file(path_filename_, std::ios_base::app);
+        
+        if (file.is_open()) {
+            auto current_time = this->now();
+            auto nanoseconds = current_time.nanoseconds();
+            auto seconds = nanoseconds / 1000000000;
+            auto fractional = nanoseconds % 1000000000;
+            
+            file << seconds << "." << std::setw(9) << std::setfill('0') << fractional << ","
+                 << pose.pose.position.x << ","
+                 << pose.pose.position.y << ","
+                 << pose.pose.position.z << ","
+                 << pose.pose.orientation.x << ","
+                 << pose.pose.orientation.y << ","
+                 << pose.pose.orientation.z << ","
+                 << pose.pose.orientation.w << "\n";
+            
+            file.close();
+            last_save_time_ = current_time;
+            last_saved_pose_ = pose;
+            
+            RCLCPP_DEBUG(this->get_logger(), "Saved pose to %s", path_filename_.c_str());
+        } else {
+            RCLCPP_WARN(this->get_logger(), "Failed to open file %s for writing", path_filename_.c_str());
+        }
+    }
 }
-*/
+
+// Add this method to initialize the path file
+void GlobalLocalization::initializePathFile()
+{
+    if (save_path_) {
+        std::ofstream file(path_filename_);
+        if (file.is_open()) {
+            file << "timestamp,x,y,z,qx,qy,qz,qw\n";
+            file.close();
+            RCLCPP_INFO(this->get_logger(), "Initialized path file: %s", path_filename_.c_str());
+        } else {
+            RCLCPP_WARN(this->get_logger(), "Failed to initialize path file: %s", path_filename_.c_str());
+        }
+    }
+}
+
+
     // Add these new callback methods
 void GlobalLocalization::mapCallback(const nav_msgs::msg::OccupancyGrid::SharedPtr msg) 
 {
@@ -222,7 +251,10 @@ sensor_msgs::msg::LaserScan GlobalLocalization::pointCloudToLaserScan(
 
 void GlobalLocalization::poseCallback(const geometry_msgs::msg::PoseStamped::SharedPtr msg)
 {
+
+
     current_pose_ = *msg;
+    saveCarPath(*msg);
 }
 
 void GlobalLocalization::speedCallback(const std_msgs::msg::Float32::SharedPtr msg)
@@ -303,6 +335,8 @@ int main(int argc, char **argv)
 {
     rclcpp::init(argc, argv);
     auto node = std::make_shared<GlobalLocalization>(rclcpp::NodeOptions().use_intra_process_comms(false).append_parameter_override("use_sim_time", true));
+    // Initialize path file
+    node->initializePathFile();
     rclcpp::spin(node);
     rclcpp::shutdown();
     return 0;
