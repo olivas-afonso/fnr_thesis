@@ -1,0 +1,22 @@
+# ROS2 build artifacts
+build/
+install/
+log/
+
+# Local repos that should not be tracked
+src/fnr_thesis/
+src/fnr_thesis_corrupt/
+src/realsense_recognition/
+src/transport_drivers/
+src/zed-ros2-wrapper/
+
+# IDE/editor junk
+.vscode/
+.idea/
+*.swp
+src/fnr_thesis/
+src/fnr_thesis_corrupt/
+src/realsense_recognition/
+src/transport_drivers/
+src/zed-ros2-wrapper/
+log/
